@@ -1,4 +1,3 @@
-class_name Guard
 extends CharacterBody2D
 ## A "tall folk" guard (greybox: a red square with a vision cone).
 ##
@@ -18,19 +17,21 @@ const VIEW_DIST_LIT := 320.0
 const HALF_FOV := deg_to_rad(34.0)   # cone half-angle
 const CATCH_DIST := 18.0
 
+const GoblinScript := preload("res://scripts/player.gd")
+
 var waypoints: PackedVector2Array = PackedVector2Array()
 var facing := Vector2.RIGHT
 var alerted := false
 var suspicion := 0.0                  # 0..1; >=1 => alerted, <=0 => calm
 
 var _wp := 0
-var _player: Goblin = null
+var _player: GoblinScript = null
 var _hearing := false                 # heard the player this frame (for the HUD/pip)
 var _was_alerted := false             # for detecting the alert->calm transition
 
 signal caught_player
 
-func setup(points: PackedVector2Array, player: Goblin) -> void:
+func setup(points: PackedVector2Array, player: GoblinScript) -> void:
 	waypoints = points
 	_player = player
 	if waypoints.size() > 0:

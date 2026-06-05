@@ -10,6 +10,9 @@ extends Node2D
 ## Goal: grab the shiny (top-right, sitting in the lamplight = risky) and carry
 ## it to the EXIT (top-left) before dawn — without getting caught.
 
+const GoblinScript := preload("res://scripts/player.gd")
+const GuardScript := preload("res://scripts/guard.gd")
+
 const DAWN_SECONDS := 90.0
 
 # Layout (fits the 960x540 viewport, so no camera needed).
@@ -20,8 +23,8 @@ const LAMP_RADIUS := 110.0
 const EXIT_POS := Vector2(78, 78)
 const EXIT_RADIUS := 34.0
 
-var _player: Goblin
-var _guard: Guard
+var _player: GoblinScript
+var _guard: GuardScript
 var _loot: Area2D
 var _exit: Area2D
 var _loot_taken := false
@@ -85,11 +88,11 @@ func _make_zone(pos: Vector2, radius: float, cb: Callable) -> Area2D:
 	return area
 
 func _build_actors() -> void:
-	_player = Goblin.new()
+	_player = GoblinScript.new()
 	_player.position = PLAYER_START
 	add_child(_player)
 
-	_guard = Guard.new()
+	_guard = GuardScript.new()
 	add_child(_guard)
 	var patrol := PackedVector2Array([
 		Vector2(700, 120), Vector2(880, 120),

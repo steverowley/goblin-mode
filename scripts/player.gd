@@ -1,4 +1,3 @@
-class_name Goblin
 extends CharacterBody2D
 ## The player goblin (greybox: a small green square, steered top-down).
 ##
