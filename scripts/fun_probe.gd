@@ -1,65 +1,71 @@
 extends Node2D
-## Milestone 0.5 "Fun Probe" — the smallest test of: is sneaking around as a
-## goblin actually fun?
+## Milestone 0.5 "Fun Probe" — the GOBLIN cut.
 ##
-## ONE hand-built room, ONE goblin (you), ONE patrolling guard with a vision
-## cone, ONE light pool to avoid, ONE shiny to steal, and a dawn timer to beat.
-## No warren, no procgen, no economy, no traits, no save — deliberately
-## (see docs/00-decisions-log.md, decision D). Greybox art = coloured shapes.
+## The first pass played like a tidy ninja. This one plays like a greedy gremlin:
+##  - GREED: shinies scattered everywhere; grab all you dare, but a heavy sack
+##    slows you and makes you louder.
+##  - MISCHIEF: smash pots (loot pops out) and smash lanterns to KILL the light
+##    and make shadows. Smashing is loud — guards come looking.
+##  - GOBLIN MODE: wrecking + nicking fills a CHAOS meter; trigger the frenzy to
+##    go feral (fast, weight-proof, deafening) and smash out the barred wall.
+##  - FEEL: a small big-eared waddling menace with a growing sack vs a big slow
+##    "tall folk" lug. Greybox shapes only.
 ##
-## Goal: grab the shiny (top-right, sitting in the lamplight = risky) and carry
-## it to the EXIT (top-left) before dawn — without getting caught.
+## Still no warren/procgen/save (decisions log, decision D). Goal: nick as much
+## as you can and escape (the OUT door, or smash the barred gate in frenzy)
+## before the dawn timer — without getting nabbed.
 
 const GoblinScript := preload("res://scripts/player.gd")
 const GuardScript := preload("res://scripts/guard.gd")
 
-const DAWN_SECONDS := 90.0
-
-# Layout (fits the 960x540 viewport, so no camera needed).
+const DAWN_SECONDS := 80.0
+const GRAB_R := 20.0
+const SMASH_R := 36.0
 const PLAYER_START := Vector2(80, 470)
-const LOOT_POS := Vector2(820, 140)
-const LAMP_POS := Vector2(820, 140)
-const LAMP_RADIUS := 110.0
-const EXIT_POS := Vector2(78, 78)
-const EXIT_RADIUS := 34.0
+const EXIT_POS := Vector2(80, 80)
+const EXIT_R := 34.0
+const GATE_POS := Vector2(926, 270)     # barred wall section — smash out in frenzy
+const GATE_R := 34.0
 
 var _player: GoblinScript
 var _guard: GuardScript
-var _loot: Area2D
-var _exit: Area2D
-var _loot_taken := false
 
 var _wall_rects: Array[Rect2] = []
+var _loot: Array = []        # {pos, value, weight, taken}
+var _lanterns: Array = []    # {pos, radius, lit}
+var _pots: Array = []        # {pos, broken}
+var _floaters: Array = []    # {pos, text, life, max, color}
+
 var _time_left := DAWN_SECONDS
-var _state := "play"           # "play" | "won" | "lost"
-var _hint := ""
-var _hint_timer := 0.0
+var _state := "play"         # play | won | lost
+var _banked := 0
 
 var _info: Label
 var _banner: Label
+var _tint: ColorRect
+var _font: Font
 
 func _ready() -> void:
+	_font = ThemeDB.fallback_font
 	_build_walls()
-	_build_items()
+	_build_stuff()
 	_build_actors()
 	_build_hud()
 
 func _build_walls() -> void:
-	# Boundary (thickness 20) around the 960x540 viewport...
 	_add_wall(Rect2(0, 0, 960, 20))
 	_add_wall(Rect2(0, 520, 960, 20))
 	_add_wall(Rect2(0, 0, 20, 540))
 	_add_wall(Rect2(940, 0, 20, 540))
-	# ...plus interior cover so there are shadows/corners to sneak around.
 	_add_wall(Rect2(300, 120, 40, 200))
-	_add_wall(Rect2(480, 300, 220, 40))
-	_add_wall(Rect2(300, 420, 260, 40))
+	_add_wall(Rect2(480, 300, 240, 40))
+	_add_wall(Rect2(300, 420, 240, 40))
 	_add_wall(Rect2(640, 60, 40, 150))
 
 func _add_wall(rect: Rect2) -> void:
 	_wall_rects.append(rect)
 	var body := StaticBody2D.new()
-	body.collision_layer = 0b01   # walls on layer 1 (blocks movement + line of sight)
+	body.collision_layer = 0b01
 	body.collision_mask = 0
 	var cs := CollisionShape2D.new()
 	var shape := RectangleShape2D.new()
@@ -69,23 +75,25 @@ func _add_wall(rect: Rect2) -> void:
 	body.add_child(cs)
 	add_child(body)
 
-func _build_items() -> void:
-	_loot = _make_zone(LOOT_POS, 22.0, _on_loot_body)
-	_exit = _make_zone(EXIT_POS, EXIT_RADIUS, _on_exit_body)
-
-func _make_zone(pos: Vector2, radius: float, cb: Callable) -> Area2D:
-	var area := Area2D.new()
-	area.position = pos
-	area.collision_layer = 0
-	area.collision_mask = 0b10        # detect the player (layer 2)
-	var cs := CollisionShape2D.new()
-	var circle := CircleShape2D.new()
-	circle.radius = radius
-	cs.shape = circle
-	area.add_child(cs)
-	add_child(area)
-	area.body_entered.connect(cb)
-	return area
+func _build_stuff() -> void:
+	# Shinies scattered around — grab as many as you dare (big ones weigh more).
+	var spots := [
+		Vector2(820, 140), Vector2(870, 200), Vector2(760, 110), Vector2(880, 430),
+		Vector2(520, 120), Vector2(160, 160), Vector2(420, 470), Vector2(700, 470),
+		Vector2(560, 220), Vector2(380, 250),
+	]
+	for i in range(spots.size()):
+		var big: bool = (i % 3 == 0)
+		_loot.append({"pos": spots[i], "value": (3 if big else 1), "weight": (3.0 if big else 1.0), "taken": false})
+	# Lit lanterns — light = danger. Smash one to make a shadow.
+	_lanterns.append({"pos": Vector2(820, 150), "radius": 110.0, "lit": true})
+	_lanterns.append({"pos": Vector2(220, 380), "radius": 90.0, "lit": true})
+	_lanterns.append({"pos": Vector2(560, 300), "radius": 95.0, "lit": true})
+	# Pots — smash for chaos (some hide a shiny).
+	_pots.append({"pos": Vector2(120, 120), "broken": false})
+	_pots.append({"pos": Vector2(700, 360), "broken": false})
+	_pots.append({"pos": Vector2(900, 110), "broken": false})
+	_pots.append({"pos": Vector2(360, 470), "broken": false})
 
 func _build_actors() -> void:
 	_player = GoblinScript.new()
@@ -94,19 +102,25 @@ func _build_actors() -> void:
 
 	_guard = GuardScript.new()
 	add_child(_guard)
-	var patrol := PackedVector2Array([
-		Vector2(700, 120), Vector2(880, 120),
-		Vector2(880, 300), Vector2(700, 300),
-	])
-	_guard.setup(patrol, _player)
+	_guard.setup(PackedVector2Array([
+		Vector2(700, 120), Vector2(880, 120), Vector2(880, 320), Vector2(640, 320),
+	]), _player)
 	_guard.caught_player.connect(_on_caught)
+	_guard.spotted.connect(_on_spotted)
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
 
+	_tint = ColorRect.new()
+	_tint.size = Vector2(960, 540)
+	_tint.color = Color(0.4, 1.0, 0.3, 0.10)        # sickly-green frenzy wash
+	_tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tint.visible = false
+	layer.add_child(_tint)
+
 	_info = Label.new()
-	_info.position = Vector2(16, 10)
+	_info.position = Vector2(16, 8)
 	layer.add_child(_info)
 
 	_banner = Label.new()
@@ -120,67 +134,114 @@ func _build_hud() -> void:
 func _physics_process(delta: float) -> void:
 	if _state != "play":
 		return
-	# Light pool exposure (the lamp).
-	_player.is_lit = _player.global_position.distance_to(LAMP_POS) < LAMP_RADIUS
+
+	# Lit by any still-burning lantern?
+	var lit := false
+	for L in _lanterns:
+		if L.lit and _player.global_position.distance_to(L.pos) < L.radius:
+			lit = true
+			break
+	_player.is_lit = lit
+
+	# Auto-grab loot on touch (goblins hoover up everything).
+	for item in _loot:
+		if not item.taken and _player.global_position.distance_to(item.pos) < GRAB_R:
+			item.taken = true
+			_player.add_loot(item.value, item.weight)
+			_player.add_chaos(0.06)
+			_spawn_text(item.pos, "heh heh", Color(1, 0.9, 0.3))
+
+	# In frenzy you smash everything you barge into.
+	if _player.frenzy:
+		_smash_near(_player.global_position, SMASH_R, true)
+
 	# Dawn.
 	_time_left -= delta
 	if _time_left <= 0.0:
 		_time_left = 0.0
-		_lose("DAWN BROKE — the tall folk woke up. You scarpered empty-handed.")
+		_lose("DAWN BROKE — sun's up, goblin's caught in the open.")
+
+	# Win: reach the OUT door with loot, or smash the barred gate in frenzy.
+	if _player.sack > 0 and _player.global_position.distance_to(EXIT_POS) < EXIT_R:
+		_win()
+	elif _player.frenzy and _player.global_position.distance_to(GATE_POS) < GATE_R:
+		_win()
 
 func _process(delta: float) -> void:
-	if _hint_timer > 0.0:
-		_hint_timer -= delta
-		if _hint_timer <= 0.0:
-			_hint = ""
+	for f in _floaters:
+		f.life = f.life - delta
+		f.pos = f.pos + Vector2(0, -14.0 * delta)
+	_floaters = _floaters.filter(func(f): return f.life > 0.0)
+	if _tint != null:
+		_tint.visible = (_state == "play" and _player.frenzy)
 	_update_info()
 	queue_redraw()
 
 func _input(event: InputEvent) -> void:
-	# R restarts at any time (fast retries make the loop quick to test).
-	if event is InputEventKey and event.pressed and event.keycode == KEY_R:
-		get_tree().reload_current_scene()
-
-func _on_loot_body(body: Node) -> void:
-	if _state != "play" or _loot_taken:
+	if not (event is InputEventKey and event.pressed):
 		return
-	if body == _player:
-		_loot_taken = true
-		_player.carrying = true
-		_loot.queue_free()
-		_flash("Snatched the shiny! Now leg it to the EXIT (top-left).", 3.0)
-
-func _on_exit_body(body: Node) -> void:
+	if event.keycode == KEY_R:
+		get_tree().reload_current_scene()
+		return
 	if _state != "play":
 		return
-	if body == _player:
-		if _player.carrying:
-			_win()
-		else:
-			_flash("That's the way out — but grab the shiny first!", 2.0)
+	if event.keycode == KEY_SPACE:
+		if _player.can_frenzy():
+			_player.start_frenzy()
+			_spawn_text(_player.global_position, "GOBLIN MODE!", Color(0.6, 1.0, 0.2))
+	elif event.keycode == KEY_E:
+		_smash_near(_player.global_position, SMASH_R, false)
+
+func _smash_near(pos: Vector2, radius: float, all_in_range: bool) -> void:
+	for L in _lanterns:
+		if L.lit and pos.distance_to(L.pos) < radius:
+			L.lit = false
+			_player.add_chaos(0.12)
+			_player.bump_noise(0.85)
+			_spawn_text(L.pos, "*SMASH* lights out!", Color(1, 0.6, 0.2))
+			if not all_in_range:
+				return
+	for p in _pots:
+		if not p.broken and pos.distance_to(p.pos) < radius:
+			p.broken = true
+			_player.add_chaos(0.10)
+			_player.bump_noise(0.80)
+			if int(p.pos.x) % 2 == 0:          # roughly half the pots hide loot
+				_player.add_loot(1, 1.0)
+				_spawn_text(p.pos, "*SMASH* shiny!", Color(1, 0.9, 0.3))
+			else:
+				_spawn_text(p.pos, "*SMASH*", Color(1, 0.6, 0.2))
+			if not all_in_range:
+				return
+
+func _spawn_text(pos: Vector2, text: String, color: Color) -> void:
+	_floaters.append({"pos": pos + Vector2(-12, -18), "text": text, "life": 1.2, "max": 1.2, "color": color})
 
 func _on_caught() -> void:
 	if _state == "play":
-		_lose("CAUGHT! A tall-folk mitt closed round your scrawny neck.")
+		_lose("NABBED! A great tall-folk fist scoops you up by the scruff.")
+
+func _on_spotted() -> void:
+	if _state == "play":
+		_spawn_text(_guard.global_position, "OI!!", Color(1, 0.3, 0.3))
 
 func _win() -> void:
+	if _state != "play":
+		return
 	_state = "won"
-	_show_banner("ESCAPED with the loot! — you little menace.\nPress R to go again.")
+	_banked = _player.sack
+	_show_banner("LEGGED IT with %d shinies! What a menace.\nPress R to raid again." % _banked)
 
 func _lose(reason: String) -> void:
 	if _state != "play":
 		return
 	_state = "lost"
-	_show_banner(reason + "\nPress R to try again.")
-
-func _flash(text: String, secs: float) -> void:
-	_hint = text
-	_hint_timer = secs
+	_show_banner(reason + "\n(You were lugging %d shinies.) Press R to try again." % _player.sack)
 
 func _show_banner(text: String) -> void:
 	_banner.text = text
 	_banner.visible = true
-	# Freeze the world so the goblin and guard stop moving behind the banner.
+	# Freeze the world behind the banner.
 	_player.velocity = Vector2.ZERO
 	_guard.velocity = Vector2.ZERO
 	_player.set_physics_process(false)
@@ -188,17 +249,23 @@ func _show_banner(text: String) -> void:
 
 func _update_info() -> void:
 	var lines := PackedStringArray()
-	lines.append("WASD / Arrows: move    Shift: sneak (quiet)    R: restart    Goal: grab the shiny -> reach the EXIT")
-	lines.append("Dawn %0.0fs   Noise %s   Spotted %s%s%s%s" % [
-		_time_left,
-		_meter(_player.noise, 10),
-		_meter(_guard.suspicion, 10),
-		("   [CARRYING]" if _player.carrying else ""),
-		("   [IN THE LIGHT!]" if _player.is_lit else ""),
-		("   ALERTED!" if _guard.alerted else ""),
+	lines.append("WASD move   Shift sneak   E smash   SPACE Goblin Mode   R restart")
+	var tag := ""
+	if _player.frenzy:
+		tag = "  *** GOBLIN MODE! ***"
+	elif _player.can_frenzy():
+		tag = "  [FRENZY READY - press SPACE]"
+	lines.append("Dawn %0.0fs   Sack %d (wt %0.0f)   Noise %s   Chaos %s%s" % [
+		_time_left, _player.sack, _player.weight,
+		_meter(_player.noise, 8), _meter(_player.chaos, 8), tag,
 	])
-	if _hint != "":
-		lines.append(_hint)
+	var flags := ""
+	if _player.is_lit:
+		flags += "[IN THE LIGHT!]  "
+	if _guard.alerted:
+		flags += "[GUARD ON YOU!]"
+	if flags != "":
+		lines.append(flags.strip_edges())
 	_info.text = "\n".join(lines)
 
 func _meter(v: float, cells: int) -> String:
@@ -206,23 +273,47 @@ func _meter(v: float, cells: int) -> String:
 	return "[" + "#".repeat(filled) + "-".repeat(cells - filled) + "]"
 
 func _draw() -> void:
-	# Floor.
-	draw_rect(Rect2(0, 0, 960, 540), Color(0.09, 0.09, 0.13))
-	# Lamp light pool (the danger zone).
-	draw_circle(LAMP_POS, LAMP_RADIUS, Color(1.0, 0.85, 0.35, 0.16))
-	draw_circle(LAMP_POS, 10.0, Color(1.0, 0.9, 0.5))
+	draw_rect(Rect2(0, 0, 960, 540), Color(0.08, 0.08, 0.12))
+	# Lantern light pools (only those still lit).
+	for L in _lanterns:
+		if L.lit:
+			draw_circle(L.pos, L.radius, Color(1.0, 0.85, 0.35, 0.16))
+			draw_circle(L.pos, 7.0, Color(1.0, 0.9, 0.5))
+		else:
+			draw_circle(L.pos, 7.0, Color(0.25, 0.25, 0.3))     # doused lantern
 	# Walls.
 	for r in _wall_rects:
 		draw_rect(r, Color(0.18, 0.18, 0.24))
-	# Exit — brightens once you're carrying the loot (it's now your goal).
-	var exit_fill := 0.4 if _loot_taken else 0.18
-	var exit_w := 4.0 if _loot_taken else 2.0
-	draw_circle(EXIT_POS, EXIT_RADIUS, Color(0.3, 0.7, 1.0, exit_fill))
-	draw_arc(EXIT_POS, EXIT_RADIUS, 0.0, TAU, 40, Color(0.4, 0.85, 1.0, 0.9), exit_w)
-	# Loot (if not yet grabbed) — a little shiny diamond.
-	if not _loot_taken:
-		var p := LOOT_POS
-		var d := PackedVector2Array([
-			p + Vector2(0, -9), p + Vector2(8, 0), p + Vector2(0, 9), p + Vector2(-8, 0),
-		])
-		draw_colored_polygon(d, Color(1.0, 0.85, 0.2))
+	# Barred gate — smash out here in Goblin Mode.
+	var frenzy := _player != null and _player.frenzy
+	var gate_col := Color(0.75, 0.5, 0.2, 0.95) if frenzy else Color(0.45, 0.35, 0.2, 0.8)
+	draw_rect(Rect2(GATE_POS.x - 6, GATE_POS.y - 28, 12, 56), gate_col)
+	_label(GATE_POS + Vector2(-118, 2), "smash-out (frenzy) ->", Color(0.8, 0.7, 0.4, 0.85))
+	# Exit (brightens once you're carrying loot).
+	var carrying := _player != null and _player.sack > 0
+	var ef := 0.42 if carrying else 0.16
+	draw_circle(EXIT_POS, EXIT_R, Color(0.3, 0.7, 1.0, ef))
+	draw_arc(EXIT_POS, EXIT_R, 0.0, TAU, 40, Color(0.4, 0.85, 1.0, 0.9), 4.0 if carrying else 2.0)
+	_label(EXIT_POS + Vector2(-13, 2), "OUT", Color(0.7, 0.9, 1.0, 0.9))
+	# Pots.
+	for p in _pots:
+		if not p.broken:
+			draw_rect(Rect2(p.pos.x - 7, p.pos.y - 7, 14, 14), Color(0.5, 0.4, 0.3))
+			draw_rect(Rect2(p.pos.x - 7, p.pos.y - 7, 14, 14), Color(0.3, 0.24, 0.18), false, 1.5)
+	# Loot (shinies still on the floor).
+	for item in _loot:
+		if not item.taken:
+			var s: float = 9.0 if item.value >= 3 else 6.0
+			var p: Vector2 = item.pos
+			draw_colored_polygon(PackedVector2Array([
+				p + Vector2(0, -s), p + Vector2(s * 0.8, 0), p + Vector2(0, s), p + Vector2(-s * 0.8, 0),
+			]), Color(1.0, 0.85, 0.2))
+	# Floating "heh heh / SMASH / OI!" text.
+	for f in _floaters:
+		var a: float = clampf(f.life / f.max, 0.0, 1.0)
+		var c: Color = f.color
+		_label(f.pos, f.text, Color(c.r, c.g, c.b, a))
+
+func _label(pos: Vector2, text: String, color: Color) -> void:
+	if _font != null:
+		draw_string(_font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, color)
