@@ -28,15 +28,13 @@
 
 ## 📚 Planning docs
 
-The full design and planning suite lives in [`/docs`](./docs):
-
-1. **[Game Concept / Pitch](./docs/01-game-concept-pitch.md)** — the hook and elevator pitch
-2. **[Game Design Document](./docs/02-game-design-document.md)** — mechanics, systems, and the core loop
-3. **[Technical Design Document](./docs/03-technical-design-document.md)** — engine, architecture, and tech risks
-4. **[Art Bible / Style Guide](./docs/04-art-bible-style-guide.md)** — visual and audio direction
-5. **[Project Plan / Roadmap](./docs/05-project-plan-roadmap.md)** — milestones from prototype to launch
-6. **[Test / QA Plan](./docs/06-test-qa-plan.md)** — testing and playtesting approach
-7. **[Risk Register](./docs/07-risk-register.md)** — what could go wrong, and the plan for it
+1. **[Game Concept / Pitch](./01-game-concept-pitch.md)** — the hook and elevator pitch
+2. **[Game Design Document](./02-game-design-document.md)** — mechanics, systems, and the core loop
+3. **[Technical Design Document](./03-technical-design-document.md)** — engine, architecture, and tech risks
+4. **[Art Bible / Style Guide](./04-art-bible-style-guide.md)** — visual and audio direction
+5. **[Project Plan / Roadmap](./05-project-plan-roadmap.md)** — milestones from prototype to launch
+6. **[Test / QA Plan](./06-test-qa-plan.md)** — testing and playtesting approach
+7. **[Risk Register](./07-risk-register.md)** — what could go wrong, and the plan for it
 
 ## 🗺️ Roadmap
 
