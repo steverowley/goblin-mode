@@ -1,36 +1,37 @@
 extends CharacterBody2D
-## The player goblin (greybox: a small green square, steered top-down).
+## The player goblin — a greedy little menace (greybox).
 ##
-## Walk (default) is faster but noisy; hold Shift to SNEAK (slow + quiet).
-## Standing in a lamp's light pool makes you far easier for a guard to spot
-## (the "light = danger, shadow = safety" pillar from the design docs).
-##
-## This is intentionally simple. The production goblin (components, traits,
-## Goblin Mode frenzy) comes at M1/M2 — see docs/03-technical-design-document.md.
+## Walk, or hold Shift to sneak. You auto-grab shinies by touching them; the
+## fuller your sack the slower AND louder you get. Wreck pots/lanterns (handled
+## by the level) to fill the CHAOS meter, then hit GOBLIN MODE: a feral frenzy
+## where weight doesn't slow you, you're loud as sin, and you can smash your way
+## out. This is the M1/M2 "Goblin Mode frenzy" (decision J) in crude greybox form.
 
-const WALK_SPEED := 150.0
-const SNEAK_SPEED := 68.0
-const CARRY_PENALTY := 0.62          # speed multiplier while carrying loot
-const MAX_NOISE_RADIUS := 200.0      # px, at full noise
+const WALK_SPEED := 145.0
+const SNEAK_SPEED := 70.0
+const FRENZY_SPEED := 215.0
+const WEIGHT_DRAG := 0.035       # how much each unit of sack-weight slows you
+const FRENZY_TIME := 5.0
+const FRENZY_COST := 0.5         # chaos needed (and spent) to go feral
 
-# Noise is 0..1: moving raises it (walking far more than sneaking), standing
-# still bleeds it off. A guard can "hear" you if it's inside your noise radius.
 var noise := 0.0
+var chaos := 0.0                 # 0..1, fills from grabbing & wrecking
 var is_sneaking := false
-var is_lit := false                  # set by the level when in a light pool
-var carrying := false                # has the loot
+var is_lit := false
+var sack := 0                    # shinies grabbed (value)
+var weight := 0.0                # sack weight (slows + loudens you)
+var frenzy := false
+var frenzy_timer := 0.0
 var facing := Vector2.RIGHT
+var _wiggle := 0.0               # waddle animation phase
 
 func _ready() -> void:
-	# Physics body: player is on collision layer 2, collides with walls (layer 1).
 	collision_layer = 0b10
 	collision_mask = 0b01
-	# Top-down game: treat every collision as a wall so sliding is uniform in
-	# all directions (the default GROUNDED mode mis-handles north/south walls).
 	motion_mode = CharacterBody2D.MOTION_MODE_FLOATING
 	var cs := CollisionShape2D.new()
 	var rect := RectangleShape2D.new()
-	rect.size = Vector2(20, 20)
+	rect.size = Vector2(16, 16)
 	cs.shape = rect
 	add_child(cs)
 
@@ -46,39 +47,85 @@ func _physics_process(delta: float) -> void:
 		dir.x += 1.0
 	dir = dir.normalized()
 
-	is_sneaking = Input.is_key_pressed(KEY_SHIFT)
-	var speed := SNEAK_SPEED if is_sneaking else WALK_SPEED
-	if carrying:
-		speed *= CARRY_PENALTY
+	if frenzy:
+		frenzy_timer -= delta
+		if frenzy_timer <= 0.0:
+			frenzy = false
+
+	is_sneaking = Input.is_key_pressed(KEY_SHIFT) and not frenzy
+
+	var speed: float
+	if frenzy:
+		speed = FRENZY_SPEED
+	else:
+		var base := SNEAK_SPEED if is_sneaking else WALK_SPEED
+		speed = base * clampf(1.0 - weight * WEIGHT_DRAG, 0.45, 1.0)
 
 	velocity = dir * speed
 	move_and_slide()
 
-	if dir != Vector2.ZERO:
-		facing = dir
-		var gain := (0.12 if is_sneaking else 0.5)
-		noise = clampf(noise + gain * delta, 0.0, 1.0)
+	# Noise: max in frenzy; otherwise rises while moving, with a weight-based
+	# floor so a heavily-laden goblin can never be truly silent.
+	if frenzy:
+		noise = 1.0
 	else:
-		noise = maxf(0.0, noise - 0.8 * delta)
+		var floor_n := clampf(weight * 0.025, 0.0, 0.5)
+		if dir != Vector2.ZERO:
+			facing = dir
+			var gain := (0.10 if is_sneaking else 0.45)
+			noise = clampf(noise + gain * delta, 0.0, 1.0)
+		else:
+			noise = noise - 0.8 * delta
+		noise = clampf(maxf(noise, floor_n), 0.0, 1.0)
+
+	if dir != Vector2.ZERO:
+		_wiggle += delta * 13.0
 
 	queue_redraw()
 
 func noise_radius() -> float:
-	return MAX_NOISE_RADIUS * noise
+	return 205.0 * noise
+
+func add_loot(value: int, w: float) -> void:
+	sack += value
+	weight += w
+
+func bump_noise(v: float) -> void:
+	noise = maxf(noise, v)
+
+func add_chaos(amount: float) -> void:
+	chaos = clampf(chaos + amount, 0.0, 1.0)
+
+func can_frenzy() -> bool:
+	return not frenzy and chaos >= FRENZY_COST
+
+func start_frenzy() -> void:
+	frenzy = true
+	frenzy_timer = FRENZY_TIME
+	chaos = maxf(0.0, chaos - FRENZY_COST)
 
 func _draw() -> void:
-	var body_col := Color(0.45, 0.82, 0.32)        # goblin green
-	if carrying:
-		body_col = Color(0.7, 0.95, 0.45)
-	# Noise ring (warm + visible, so you can see it reach a guard's ears).
+	var wob := sin(_wiggle) * 2.0    # waddle
+	# Noise ring (turns angry-red in frenzy).
 	var r := noise_radius()
 	if r > 6.0:
-		draw_arc(Vector2.ZERO, r, 0.0, TAU, 48, Color(1.0, 0.8, 0.35, 0.28), 2.0)
-	# "In the light" warning outline.
-	if is_lit:
-		draw_rect(Rect2(-13, -13, 26, 26), Color(1, 0.95, 0.3, 0.9), false, 2.0)
-	# Body + facing tick.
-	draw_rect(Rect2(-10, -10, 20, 20), body_col)
-	draw_line(Vector2.ZERO, facing * 15.0, Color.WHITE, 2.0)
-	if carrying:
-		draw_circle(Vector2(0, -16), 4.0, Color(1, 0.85, 0.2))   # the shiny on your back
+		var ring := Color(1, 0.35, 0.3, 0.32) if frenzy else Color(1.0, 0.8, 0.35, 0.26)
+		draw_arc(Vector2.ZERO, r, 0.0, TAU, 48, ring, 2.0)
+	var col := Color(0.6, 1.0, 0.2) if frenzy else Color(0.5, 0.85, 0.35)
+	# Big goblin ears.
+	draw_colored_polygon(PackedVector2Array([Vector2(-8, -5 + wob), Vector2(-4, -13 + wob), Vector2(-1, -5 + wob)]), col)
+	draw_colored_polygon(PackedVector2Array([Vector2(8, -5 + wob), Vector2(4, -13 + wob), Vector2(1, -5 + wob)]), col)
+	# Body.
+	draw_rect(Rect2(-7, -7 + wob, 14, 14), col)
+	# Mean little eyes.
+	draw_circle(Vector2(-3, -2 + wob), 1.4, Color.BLACK)
+	draw_circle(Vector2(3, -2 + wob), 1.4, Color.BLACK)
+	# Loot sack on the back, grows with weight.
+	if sack > 0:
+		var s := clampf(4.0 + weight * 0.6, 4.0, 15.0)
+		draw_circle(Vector2(0, 9 + wob), s, Color(0.55, 0.42, 0.28))
+	# "You're lit!" warning.
+	if is_lit and not frenzy:
+		draw_rect(Rect2(-10, -10 + wob, 20, 20), Color(1, 0.95, 0.3, 0.9), false, 2.0)
+	# Facing tick.
+	draw_line(Vector2(0, wob), facing * 12.0 + Vector2(0, wob), Color.WHITE, 1.5)
