@@ -1,0 +1,20 @@
+# Godot 4 ----------------------------------------------------------------
+# Editor-generated cache & import data (regenerated on open — never commit).
+.godot/
+
+# Export output.
+/build/
+/export/
+export_presets.cfg
+*.pck
+*.zip
+*.exe
+
+# Godot 3 leftover (harmless to keep ignored).
+.import/
+
+# OS / editor junk --------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+*~

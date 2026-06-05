@@ -1,0 +1,21 @@
+; Engine configuration file for the Goblin Mode "Fun Probe" greybox.
+; Godot 4.x (GDScript). This is the Milestone 0.5 fun-test, not the full game.
+
+config_version=5
+
+[application]
+
+config/name="Goblin Mode — Fun Probe (greybox)"
+config/description="Milestone 0.5: the smallest test of whether sneaking around as a goblin is fun."
+run/main_scene="res://scenes/fun_probe.tscn"
+config/features=PackedStringArray("4.6")
+
+[display]
+
+window/size/viewport_width=960
+window/size/viewport_height=540
+
+[rendering]
+
+; gl_compatibility targets low-end / integrated graphics (per the Technical Design Doc).
+renderer/rendering_method="gl_compatibility"
