@@ -8,7 +8,7 @@ config_version=5
 config/name="Goblin Mode — Fun Probe (greybox)"
 config/description="Milestone 0.5: the smallest test of whether sneaking around as a goblin is fun."
 run/main_scene="res://scenes/fun_probe.tscn"
-config/features=PackedStringArray("4.3")
+config/features=PackedStringArray("4.6")
 
 [display]
 
