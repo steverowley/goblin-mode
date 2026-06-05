@@ -43,4 +43,20 @@ The full design and planning suite lives in [`/docs`](./docs):
 | Milestone | Goal |
 |-----------|------|
 | **0 · Engine bake-off** | Pick the engine (Godot vs Unity) |
-| **1 · Prototype** | One playable raid — is sne
+| **1 · Prototype** | One playable raid — is sneaking around as a goblin fun? |
+| **2 · Vertical Slice** | One polished warren room + one full raid + death/respawn loop. The go/no-go gate. |
+| **3 · Alpha** | All core systems present, content rough |
+| **4 · Beta** | Feature-complete single-player, balanced and polished |
+| **5 · Launch** | Steam release (likely Early Access) |
+
+## 🛠️ Building & running
+
+> _Coming soon — the project hasn't reached a playable build yet. Build instructions will land here once the prototype exists._
+
+## 🤝 Contributing
+
+This is currently a solo project in early pre-production. Issues and ideas are welcome — open an issue to start a conversation.
+
+## 📄 License
+
+[TODO: choose a license.] Code and assets are © the project author until a license is added.
