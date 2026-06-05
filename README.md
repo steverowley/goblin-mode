@@ -57,7 +57,17 @@
 
 ## 🛠️ Building & running
 
-> _Coming soon — the project hasn't reached a playable build yet. Build instructions will land here once the prototype exists._
+The first playable is the **Fun Probe** (Milestone 0.5) — a greybox test of whether sneaking around as a goblin is fun. No art, no warren; coloured shapes only.
+
+**Requirements:** [Godot 4](https://godotengine.org/) (4.3+). On Windows: `winget install GodotEngine.GodotEngine`.
+
+**Run it:**
+1. Open Godot → **Import**, and point it at this folder (it'll find `project.godot`).
+2. Press **F5** (Play).
+
+**How to play:** WASD/Arrows to move, **Shift** to sneak (slower + quieter). Steal the shiny (top-right, in the lamplight) and carry it to the **exit** (top-left) before dawn — without being seen or heard by the guard. **R** restarts.
+
+> The Fun Probe is deliberately simpler than the architecture in the [Technical Design Document](./docs/03-technical-design-document.md) — its only job is to prove the core loop is fun (see the [decisions log](./docs/00-decisions-log.md), decision D).
 
 ## 🤝 Contributing
 
