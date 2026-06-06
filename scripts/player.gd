@@ -29,7 +29,6 @@ var frenzy_timer := 0.0
 var facing := Vector2.RIGHT
 var _wiggle := 0.0               # waddle animation phase
 var _step_t := 0.0               # countdown to the next footstep noise
-var _vision: PointLight2D        # the goblin's facing vision cone (purely visual)
 
 func _ready() -> void:
 	collision_layer = 0b10
@@ -40,41 +39,6 @@ func _ready() -> void:
 	rect.size = Vector2(16, 16)
 	cs.shape = rect
 	add_child(cs)
-
-	# Vision: a facing cone of light (+ a small near-circle right around the
-	# goblin). shadow_enabled lets the wall occluders block it, so you can't see
-	# through walls. PURELY VISUAL — it never feeds the guard's detection.
-	_vision = PointLight2D.new()
-	_vision.texture = _make_cone_texture()
-	_vision.texture_scale = 2.4          # cone reach ~300 px
-	_vision.energy = 1.8
-	_vision.shadow_enabled = true
-	_vision.shadow_filter = Light2D.SHADOW_FILTER_NONE
-	add_child(_vision)
-
-func _make_cone_texture() -> ImageTexture:
-	var sz := 256
-	var c := sz / 2.0
-	var img := Image.create(sz, sz, false, Image.FORMAT_RGBA8)
-	var half_fov := deg_to_rad(52.0)
-	var near_r := 46.0
-	var cone_r := float(c)
-	for y in range(sz):
-		for x in range(sz):
-			var dx := float(x) - c
-			var dy := float(y) - c
-			var dist := sqrt(dx * dx + dy * dy)
-			var a := 0.0
-			if dist < near_r:
-				a = 1.0 - (dist / near_r) * 0.25
-			elif dist < cone_r:
-				var ang := atan2(dy, dx)          # 0 == +X (the facing direction)
-				if absf(ang) <= half_fov:
-					var edge := 1.0 - (absf(ang) / half_fov)
-					var falloff := 1.0 - (dist / cone_r)
-					a = clampf(falloff * (0.45 + 0.55 * edge), 0.0, 1.0)
-			img.set_pixel(x, y, Color(1, 1, 1, a))
-	return ImageTexture.create_from_image(img)
 
 func _physics_process(delta: float) -> void:
 	var dir := Vector2.ZERO
@@ -134,10 +98,6 @@ func _physics_process(delta: float) -> void:
 			noise_made.emit(global_position, step_loud)
 	else:
 		_step_t = 0.0            # standing still — next step fires the moment you move
-
-	# Point the vision cone where we're facing.
-	if _vision != null:
-		_vision.rotation = facing.angle()
 
 	queue_redraw()
 

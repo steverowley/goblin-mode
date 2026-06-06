@@ -57,6 +57,7 @@ var _seen := false
 var _search_t := 0.0
 var _investigate_t := 0.0
 var _caught := false
+var _cone_pts := PackedVector2Array()   # the drawn vision cone, clipped to walls
 
 signal caught_player
 signal spotted          # emitted the instant it freshly spots you (for an "OI!")
@@ -93,6 +94,9 @@ func _physics_process(delta: float) -> void:
 	if not _caught and state == State.CHASE and _player != null and global_position.distance_to(_player.global_position) < CATCH_DIST:
 		_caught = true
 		caught_player.emit()
+
+	if state != State.CHASE:
+		_compute_cone()
 	queue_redraw()
 
 # --- SENSES ---------------------------------------------------------------
@@ -132,6 +136,26 @@ func _has_line_of_sight(point: Vector2) -> bool:
 	var space := get_world_2d().direct_space_state
 	var query := PhysicsRayQueryParameters2D.create(global_position, point, 0b01)
 	return space.intersect_ray(query).is_empty()
+
+## Build the drawn cone as a fan of rays that STOP at the first wall, so the
+## visible cone matches the line-of-sight the guard actually has.
+func _compute_cone() -> void:
+	_cone_pts = PackedVector2Array()
+	_cone_pts.append(Vector2.ZERO)
+	var lit := _player != null and _player.is_lit
+	var view := view_dist_lit if lit else view_dist
+	var space := get_world_2d().direct_space_state
+	var steps := 18
+	var a0 := facing.angle() - half_fov
+	for i in range(steps + 1):
+		var a := a0 + (2.0 * half_fov) * (float(i) / float(steps))
+		var d := Vector2(cos(a), sin(a))
+		var q := PhysicsRayQueryParameters2D.create(global_position, global_position + d * view, 0b01)
+		var hit := space.intersect_ray(q)
+		if hit.is_empty():
+			_cone_pts.append(d * view)
+		else:
+			_cone_pts.append(hit.position - global_position)
 
 # --- BRAIN ----------------------------------------------------------------
 
@@ -232,21 +256,14 @@ func _nearest_waypoint() -> int:
 # --- DRAW -----------------------------------------------------------------
 
 func _draw() -> void:
-	# Vision cone — hidden during a chase; longer when the player is lit.
-	if state != State.CHASE:
+	# Vision cone — hidden during a chase; clipped to walls (built in _compute_cone)
+	# so it never pokes through them and matches the guard's real line-of-sight.
+	if state != State.CHASE and _cone_pts.size() >= 3:
 		var lit := _player != null and _player.is_lit
 		var cone_col := Color(1, 0.85, 0.4, 0.16) if lit else Color(1, 1, 0.25, 0.06)
 		if suspicion > 0.02:
 			cone_col = Color(1, 0.55, 0.1, 0.13)
-		var view := view_dist_lit if lit else view_dist
-		var pts := PackedVector2Array()
-		pts.append(Vector2.ZERO)
-		var steps := 18
-		var a0 := facing.angle() - half_fov
-		for i in range(steps + 1):
-			var a := a0 + (2.0 * half_fov) * (float(i) / float(steps))
-			pts.append(Vector2(cos(a), sin(a)) * view)
-		draw_colored_polygon(pts, cone_col)
+		draw_colored_polygon(_cone_pts, cone_col)
 
 	# Big tall-folk body (deliberately larger than the goblin).
 	draw_rect(Rect2(-16, -16, 32, 32), Color(0.8, 0.3, 0.3))
