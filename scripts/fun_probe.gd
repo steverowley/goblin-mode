@@ -292,6 +292,8 @@ func _update_info() -> void:
 		flags += "[IN THE LIGHT!]  "
 	if _guard.investigating:
 		flags += "[GUARD HEARD SOMETHING]  "
+	if _guard.searching:
+		flags += "[GUARD SEARCHING]  "
 	if _guard.alerted:
 		flags += "[GUARD ON YOU!]"
 	if flags != "":
@@ -345,6 +347,11 @@ func _draw() -> void:
 		var hp: Vector2 = _guard.heard_pos
 		draw_arc(hp, 15.0, 0.0, TAU, 24, Color(1, 0.55, 0.1, 0.6), 2.0)
 		_label(hp + Vector2(-3, 5), "?", Color(1, 0.6, 0.15, 0.95))
+	# Where the guard is searching after losing sight of you.
+	elif _guard != null and _guard.searching:
+		var ls: Vector2 = _guard.last_seen
+		draw_arc(ls, 15.0, 0.0, TAU, 24, Color(0.4, 0.8, 1.0, 0.6), 2.0)
+		_label(ls + Vector2(-30, 5), "where'd it go?", Color(0.5, 0.85, 1.0, 0.9))
 
 	# Dawn closing in — warm red creeps from the edges.
 	if _state == "play" and _time_left < DAWN_RAMP:
