@@ -28,6 +28,8 @@ const EXIT_R := 34.0
 const GATE_POS := Vector2(926, 270)     # barred wall section — smash out in frenzy
 const GATE_R := 34.0
 
+const NIGHT_COLOR := Color(0.04, 0.04, 0.07)   # near-black night — you only see your cone
+
 var _player: GoblinScript
 var _guard: GuardScript
 
@@ -44,14 +46,24 @@ var _banked := 0
 var _info: Label
 var _banner: Label
 var _tint: ColorRect
+var _overlay: Node2D          # light-immune layer that keeps crit cues bright in the dark
 var _font: Font
 
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
+	_build_fog()
 	_build_walls()
 	_build_stuff()
 	_build_actors()
 	_build_hud()
+
+func _build_fog() -> void:
+	# Night: dim the whole world canvas so the goblin really only sees what its
+	# vision cone (and the lantern pools) light up. CanvasLayers are immune to
+	# this — that's how the HUD and the crit-cue overlay stay full-bright.
+	var night := CanvasModulate.new()
+	night.color = NIGHT_COLOR
+	add_child(night)
 
 func _build_walls() -> void:
 	_add_wall(Rect2(0, 0, 960, 20))
@@ -76,6 +88,18 @@ func _add_wall(rect: Rect2) -> void:
 	body.add_child(cs)
 	add_child(body)
 
+	# Shadow caster matching this wall, so lantern + vision light can't pass
+	# through it. Parented to the level with world-space corners (the body's
+	# collision shape is offset by half its size, so we use the raw Rect2 here).
+	var occ := LightOccluder2D.new()
+	var poly := OccluderPolygon2D.new()
+	poly.cull_mode = OccluderPolygon2D.CULL_DISABLED
+	poly.polygon = PackedVector2Array([
+		rect.position, Vector2(rect.end.x, rect.position.y), rect.end, Vector2(rect.position.x, rect.end.y),
+	])
+	occ.occluder = poly
+	add_child(occ)
+
 func _build_stuff() -> void:
 	# Shinies scattered around — grab as many as you dare (big ones weigh more).
 	var spots := [
@@ -90,6 +114,9 @@ func _build_stuff() -> void:
 	_lanterns.append({"pos": Vector2(820, 150), "radius": 110.0, "lit": true})
 	_lanterns.append({"pos": Vector2(220, 380), "radius": 90.0, "lit": true})
 	_lanterns.append({"pos": Vector2(560, 300), "radius": 95.0, "lit": true})
+	# Lanterns are NOT reveal-lights — only the goblin's cone lights the world.
+	# A lit lantern's warm danger-pool is drawn in _draw(), so you only see it
+	# when your cone sweeps across it (true fog-of-war).
 	# Pots — smash for chaos (some hide a shiny).
 	_pots.append({"pos": Vector2(120, 120), "broken": false})
 	_pots.append({"pos": Vector2(700, 360), "broken": false})
@@ -112,7 +139,19 @@ func _build_actors() -> void:
 	_player.noise_made.connect(_emit_noise)
 
 func _build_hud() -> void:
+	# Crit-cue overlay on its own CanvasLayer (immune to the night CanvasModulate),
+	# so guard markers, floaters, and the dawn vignette stay readable in the dark.
+	var overlay_layer := CanvasLayer.new()
+	overlay_layer.layer = 1
+	overlay_layer.follow_viewport_enabled = true   # stay aligned if a camera is added later
+	add_child(overlay_layer)
+	var ov := _OverlayDraw.new()
+	ov.probe = self
+	overlay_layer.add_child(ov)
+	_overlay = ov
+
 	var layer := CanvasLayer.new()
+	layer.layer = 2
 	add_child(layer)
 
 	_tint = ColorRect.new()
@@ -158,15 +197,18 @@ func _physics_process(delta: float) -> void:
 	# Dawn — not a cliff: the last stretch ramps tension (guards quicken, ears sharpen).
 	_time_left -= delta
 	_guard.set_tension(clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0))
-	if _time_left <= 0.0:
-		_time_left = 0.0
-		_lose("DAWN BROKE — sun's up, goblin's caught in the open.")
 
-	# Win: reach the OUT door with loot, or smash the barred gate in frenzy.
+	# Win first, so reaching the OUT door (with loot) or smashing the gate in
+	# frenzy on the very last frame counts as a win, not a dawn loss.
 	if _player.sack > 0 and _player.global_position.distance_to(EXIT_POS) < EXIT_R:
 		_win()
 	elif _player.frenzy and _player.global_position.distance_to(GATE_POS) < GATE_R:
 		_win()
+
+	# Dawn breaks — caught in the open.
+	if _state == "play" and _time_left <= 0.0:
+		_time_left = 0.0
+		_lose("DAWN BROKE — sun's up, goblin's caught in the open.")
 
 func _process(delta: float) -> void:
 	for f in _floaters:
@@ -177,6 +219,8 @@ func _process(delta: float) -> void:
 		_tint.visible = (_state == "play" and _player.frenzy)
 	_update_info()
 	queue_redraw()
+	if _overlay != null:
+		_overlay.queue_redraw()
 
 func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed):
@@ -306,15 +350,14 @@ func _meter(v: float, cells: int) -> String:
 
 func _draw() -> void:
 	draw_rect(Rect2(0, 0, 960, 540), Color(0.08, 0.08, 0.12))
-	# Lantern light pools (only those still lit).
+	# Lanterns: a warm danger-pool for lit ones, drawn on the world canvas so the
+	# night hides it — you only see a pool when your vision cone falls across it.
 	for L in _lanterns:
 		if L.lit:
-			draw_circle(L.pos, L.radius, Color(1.0, 0.85, 0.35, 0.16))
-			draw_circle(L.pos, 7.0, Color(1.0, 0.9, 0.5))
-		else:
-			draw_circle(L.pos, 7.0, Color(0.25, 0.25, 0.3))     # doused lantern
-	# Wall shadows cut the light pools — that's where it's safe to lurk.
-	_draw_shadows()
+			draw_circle(L.pos, L.radius, Color(1.0, 0.82, 0.4, 0.34))
+			draw_circle(L.pos, L.radius * 0.6, Color(1.0, 0.86, 0.48, 0.34))
+			draw_circle(L.pos, L.radius * 0.3, Color(1.0, 0.92, 0.62, 0.4))
+		draw_circle(L.pos, 5.0, Color(1.0, 0.95, 0.65) if L.lit else Color(0.25, 0.25, 0.3))
 	# Walls.
 	for r in _wall_rects:
 		draw_rect(r, Color(0.18, 0.18, 0.24))
@@ -342,69 +385,40 @@ func _draw() -> void:
 			draw_colored_polygon(PackedVector2Array([
 				p + Vector2(0, -s), p + Vector2(s * 0.8, 0), p + Vector2(0, s), p + Vector2(-s * 0.8, 0),
 			]), Color(1.0, 0.85, 0.2))
-	# Where the guard is heading to investigate a noise it heard.
-	if _guard != null and _guard.investigating:
-		var hp: Vector2 = _guard.heard_pos
-		draw_arc(hp, 15.0, 0.0, TAU, 24, Color(1, 0.55, 0.1, 0.6), 2.0)
-		_label(hp + Vector2(-3, 5), "?", Color(1, 0.6, 0.15, 0.95))
-	# Where the guard is searching after losing sight of you.
-	elif _guard != null and _guard.searching:
-		var ls: Vector2 = _guard.last_seen
-		draw_arc(ls, 15.0, 0.0, TAU, 24, Color(0.4, 0.8, 1.0, 0.6), 2.0)
-		_label(ls + Vector2(-30, 5), "where'd it go?", Color(0.5, 0.85, 1.0, 0.9))
-
-	# Dawn closing in — warm red creeps from the edges.
-	if _state == "play" and _time_left < DAWN_RAMP:
-		var t: float = clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0)
-		draw_rect(Rect2(0, 0, 960, 540), Color(0.95, 0.2, 0.1, 0.7 * t), false, 6.0 + 22.0 * t)
-
-	# Floating "heh heh / SMASH / OI!" text.
-	for f in _floaters:
-		var a: float = clampf(f.life / f.max, 0.0, 1.0)
-		var c: Color = f.color
-		_label(f.pos, f.text, Color(c.r, c.g, c.b, a))
-
-## Cast each wall's shadow away from each lit lantern, darkening the light pool
-## behind it. Greybox approximation: project the wall's two silhouette corners.
-func _draw_shadows() -> void:
-	for L in _lanterns:
-		if not L.lit:
-			continue
-		for r in _wall_rects:
-			_draw_wall_shadow(L.pos, L.radius, r)
-
-func _draw_wall_shadow(light: Vector2, radius: float, r: Rect2) -> void:
-	if r.has_point(light):
-		return
-	# Skip walls whose nearest point falls outside this lantern's reach.
-	var nearest := Vector2(clampf(light.x, r.position.x, r.end.x), clampf(light.y, r.position.y, r.end.y))
-	if light.distance_to(nearest) > radius:
-		return
-	var corners := [
-		r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y),
-	]
-	# Silhouette = the corners at the extreme angles as seen from the light.
-	var base: float = (corners[0] - light).angle()
-	var min_a := 0.0
-	var max_a := 0.0
-	var c_min: Vector2 = corners[0]
-	var c_max: Vector2 = corners[0]
-	for c in corners:
-		var a: float = wrapf((c - light).angle() - base, -PI, PI)
-		if a < min_a:
-			min_a = a
-			c_min = c
-		elif a > max_a:
-			max_a = a
-			c_max = c
-	var proj := radius * 2.2
-	var p_min: Vector2 = c_min + (c_min - light).normalized() * proj
-	var p_max: Vector2 = c_max + (c_max - light).normalized() * proj
-	draw_colored_polygon(
-		PackedVector2Array([c_min, c_max, p_max, p_min]),
-		Color(0.08, 0.08, 0.12, 0.85),
-	)
 
 func _label(pos: Vector2, text: String, color: Color) -> void:
 	if _font != null:
 		draw_string(_font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, color)
+
+## A light-immune sibling canvas: redraws the gameplay-critical cues that must
+## stay readable even when the world is dimmed by the night CanvasModulate.
+class _OverlayDraw extends Node2D:
+	var probe
+	func _draw() -> void:
+		if probe != null:
+			probe._draw_overlay(self)
+
+func _draw_overlay(cv: CanvasItem) -> void:
+	# Where the guard is heading to investigate a noise it heard.
+	if _guard != null and _guard.investigating:
+		var hp: Vector2 = _guard.heard_pos
+		cv.draw_arc(hp, 15.0, 0.0, TAU, 24, Color(1, 0.55, 0.1, 0.6), 2.0)
+		_label_on(cv, hp + Vector2(-3, 5), "?", Color(1, 0.6, 0.15, 0.95))
+	# Where the guard is searching after losing sight of you.
+	elif _guard != null and _guard.searching:
+		var ls: Vector2 = _guard.last_seen
+		cv.draw_arc(ls, 15.0, 0.0, TAU, 24, Color(0.4, 0.8, 1.0, 0.6), 2.0)
+		_label_on(cv, ls + Vector2(-30, 5), "where'd it go?", Color(0.5, 0.85, 1.0, 0.9))
+	# Dawn closing in — warm red creeps from the edges (kept bright over the fog).
+	if _state == "play" and _time_left < DAWN_RAMP:
+		var t: float = clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0)
+		cv.draw_rect(Rect2(0, 0, 960, 540), Color(0.95, 0.2, 0.1, 0.7 * t), false, 6.0 + 22.0 * t)
+	# Floating "heh heh / SMASH / OI!" text.
+	for f in _floaters:
+		var a: float = clampf(f.life / f.max, 0.0, 1.0)
+		var c: Color = f.color
+		_label_on(cv, f.pos, f.text, Color(c.r, c.g, c.b, a))
+
+func _label_on(cv: CanvasItem, pos: Vector2, text: String, color: Color) -> void:
+	if _font != null:
+		cv.draw_string(_font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, color)

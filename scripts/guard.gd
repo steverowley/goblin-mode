@@ -32,6 +32,7 @@ const INVESTIGATE_AT := 0.22     # suspicion above this (but below alert) = go a
 const SEE_FILL := 1.7            # how fast seeing you (unlit) fills suspicion
 const SUSPICION_DECAY := 0.45    # how fast suspicion drains when it senses nothing
 const SEARCH_TIME := 3.5         # seconds spent poking around last-seen before giving up
+const INVESTIGATE_TIME := 4.0    # seconds chasing a heard-noise point before giving up
 const SCAN_RATE := 1.5           # how fast the gaze sweeps while standing and searching
 const CATCH_DIST := 24.0
 
@@ -54,6 +55,8 @@ var _player: GoblinScript = null
 var _tension := 0.0
 var _seen := false
 var _search_t := 0.0
+var _investigate_t := 0.0
+var _caught := false
 
 signal caught_player
 signal spotted          # emitted the instant it freshly spots you (for an "OI!")
@@ -87,7 +90,8 @@ func _physics_process(delta: float) -> void:
 	_decide(delta)
 	_act(delta)
 
-	if state == State.CHASE and _player != null and global_position.distance_to(_player.global_position) < CATCH_DIST:
+	if not _caught and state == State.CHASE and _player != null and global_position.distance_to(_player.global_position) < CATCH_DIST:
+		_caught = true
 		caught_player.emit()
 	queue_redraw()
 
@@ -109,7 +113,8 @@ func hear_noise(source: Vector2, loudness: float) -> void:
 	if perceived < thresh:
 		return
 	heard_pos = source
-	suspicion = minf(0.95, suspicion + perceived * HEAR_GAIN)
+	# Only ever RAISE suspicion — never claw back progress the sight system made.
+	suspicion = maxf(suspicion, minf(0.95, suspicion + perceived * HEAR_GAIN))
 
 func _can_see_player() -> bool:
 	if _player == null:
@@ -142,10 +147,12 @@ func _decide(delta: float) -> void:
 				_to_chase()
 			elif suspicion >= INVESTIGATE_AT:
 				state = State.INVESTIGATE
+				_investigate_t = INVESTIGATE_TIME
 		State.INVESTIGATE:
+			_investigate_t -= delta
 			if _seen and suspicion >= 1.0:
 				_to_chase()
-			elif suspicion < INVESTIGATE_AT * 0.4:
+			elif suspicion < INVESTIGATE_AT * 0.4 or _investigate_t <= 0.0:
 				_to_patrol()
 		State.CHASE:
 			if not _seen and suspicion < 1.0:
