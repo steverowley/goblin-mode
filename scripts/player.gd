@@ -13,6 +13,10 @@ const FRENZY_SPEED := 215.0
 const WEIGHT_DRAG := 0.035       # how much each unit of sack-weight slows you
 const FRENZY_TIME := 5.0
 const FRENZY_COST := 0.5         # chaos needed (and spent) to go feral
+const STEP_INTERVAL := 0.34      # seconds between footstep-noise events while walking
+const FRENZY_STEP_INTERVAL := 0.16   # feral feet are loud and fast
+
+signal noise_made(pos, loudness)     # a footstep — the level routes it to listeners
 
 var noise := 0.0
 var chaos := 0.0                 # 0..1, fills from grabbing & wrecking
@@ -24,6 +28,7 @@ var frenzy := false
 var frenzy_timer := 0.0
 var facing := Vector2.RIGHT
 var _wiggle := 0.0               # waddle animation phase
+var _step_t := 0.0               # countdown to the next footstep noise
 
 func _ready() -> void:
 	collision_layer = 0b10
@@ -80,6 +85,13 @@ func _physics_process(delta: float) -> void:
 
 	if dir != Vector2.ZERO:
 		_wiggle += delta * 13.0
+		# Footsteps as discrete noise events the guard can hear (and chase).
+		_step_t -= delta
+		if _step_t <= 0.0:
+			_step_t = FRENZY_STEP_INTERVAL if frenzy else STEP_INTERVAL
+			noise_made.emit(global_position, noise)
+	else:
+		_step_t = 0.0            # standing still — next step fires the moment you move
 
 	queue_redraw()
 

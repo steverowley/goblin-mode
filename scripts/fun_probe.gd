@@ -19,6 +19,7 @@ const GoblinScript := preload("res://scripts/player.gd")
 const GuardScript := preload("res://scripts/guard.gd")
 
 const DAWN_SECONDS := 80.0
+const DAWN_RAMP := 26.0          # final seconds where dawn-tension ramps the guards up
 const GRAB_R := 20.0
 const SMASH_R := 36.0
 const PLAYER_START := Vector2(80, 470)
@@ -107,6 +108,8 @@ func _build_actors() -> void:
 	]), _player)
 	_guard.caught_player.connect(_on_caught)
 	_guard.spotted.connect(_on_spotted)
+	# Footsteps reach the guard's ears through the noise router.
+	_player.noise_made.connect(_emit_noise)
 
 func _build_hud() -> void:
 	var layer := CanvasLayer.new()
@@ -149,14 +152,16 @@ func _physics_process(delta: float) -> void:
 			item.taken = true
 			_player.add_loot(item.value, item.weight)
 			_player.add_chaos(0.06)
+			_emit_noise(item.pos, 0.30)      # a faint scuffle — risky right by a guard
 			_spawn_text(item.pos, "heh heh", Color(1, 0.9, 0.3))
 
 	# In frenzy you smash everything you barge into.
 	if _player.frenzy:
 		_smash_near(_player.global_position, SMASH_R, true)
 
-	# Dawn.
+	# Dawn — not a cliff: the last stretch ramps tension (guards quicken, ears sharpen).
 	_time_left -= delta
+	_guard.set_tension(clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0))
 	if _time_left <= 0.0:
 		_time_left = 0.0
 		_lose("DAWN BROKE — sun's up, goblin's caught in the open.")
@@ -192,12 +197,19 @@ func _input(event: InputEvent) -> void:
 	elif event.keycode == KEY_E:
 		_smash_near(_player.global_position, SMASH_R, false)
 
+## Route a noise event from somewhere in the world to everything that can hear.
+## (One guard today; a loop over a guard list tomorrow.)
+func _emit_noise(pos: Vector2, loudness: float) -> void:
+	if _guard != null:
+		_guard.hear_noise(pos, loudness)
+
 func _smash_near(pos: Vector2, radius: float, all_in_range: bool) -> void:
 	for L in _lanterns:
 		if L.lit and pos.distance_to(L.pos) < radius:
 			L.lit = false
 			_player.add_chaos(0.12)
 			_player.bump_noise(0.85)
+			_emit_noise(L.pos, 0.95)         # a smash carries far — guards come looking
 			_spawn_text(L.pos, "*SMASH* lights out!", Color(1, 0.6, 0.2))
 			if not all_in_range:
 				return
@@ -206,6 +218,7 @@ func _smash_near(pos: Vector2, radius: float, all_in_range: bool) -> void:
 			p.broken = true
 			_player.add_chaos(0.10)
 			_player.bump_noise(0.80)
+			_emit_noise(p.pos, 0.90)
 			if int(p.pos.x) % 2 == 0:          # roughly half the pots hide loot
 				_player.add_loot(1, 1.0)
 				_spawn_text(p.pos, "*SMASH* shiny!", Color(1, 0.9, 0.3))
@@ -260,8 +273,12 @@ func _update_info() -> void:
 		_meter(_player.noise, 8), _meter(_player.chaos, 8), tag,
 	])
 	var flags := ""
+	if _time_left < DAWN_RAMP:
+		flags += "[DAWN COMING!]  "
 	if _player.is_lit:
 		flags += "[IN THE LIGHT!]  "
+	if _guard.investigating:
+		flags += "[GUARD HEARD SOMETHING]  "
 	if _guard.alerted:
 		flags += "[GUARD ON YOU!]"
 	if flags != "":
@@ -308,6 +325,17 @@ func _draw() -> void:
 			draw_colored_polygon(PackedVector2Array([
 				p + Vector2(0, -s), p + Vector2(s * 0.8, 0), p + Vector2(0, s), p + Vector2(-s * 0.8, 0),
 			]), Color(1.0, 0.85, 0.2))
+	# Where the guard is heading to investigate a noise it heard.
+	if _guard != null and _guard.investigating:
+		var hp: Vector2 = _guard.heard_pos
+		draw_arc(hp, 15.0, 0.0, TAU, 24, Color(1, 0.55, 0.1, 0.6), 2.0)
+		_label(hp + Vector2(-3, 5), "?", Color(1, 0.6, 0.15, 0.95))
+
+	# Dawn closing in — warm red creeps from the edges.
+	if _state == "play" and _time_left < DAWN_RAMP:
+		var t: float = clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0)
+		draw_rect(Rect2(0, 0, 960, 540), Color(0.95, 0.2, 0.1, 0.7 * t), false, 6.0 + 22.0 * t)
+
 	# Floating "heh heh / SMASH / OI!" text.
 	for f in _floaters:
 		var a: float = clampf(f.life / f.max, 0.0, 1.0)

@@ -1,10 +1,16 @@
 extends CharacterBody2D
 ## A "tall folk" guard (greybox: a big, slow red lug with a vision cone).
 ##
-## Deliberately big and dim next to the little goblin. Patrols a loop, sees you
-## in its cone with clear line of sight (instant if you're lit), hears you if
-## you're noisy (so smashing things nearby will bring it running), and once
-## ALERTED it bellows "OI!" and gives chase. Touch you while alerted = nabbed.
+## Senses the goblin two ways: SIGHT (a facing cone with real line-of-sight —
+## walls block it, and being lit makes you easy to spot) and HEARING (discrete
+## noise events that fade with distance and are muffled by walls). What it does
+## about it runs on a single suspicion meter:
+##   PATROL      — walk the loop.
+##   INVESTIGATE — heard something; go look where the sound came from.
+##   CHASE       — actually saw you; run you down. Touch while alerted = nabbed.
+## Sound alone never fully alerts it — noise brings the guard to LOOK; only
+## SEEING you confirms the catch. As dawn nears, tension sharpens its ears and
+## quickens its step.
 
 const PATROL_SPEED := 46.0
 const CHASE_SPEED := 100.0
@@ -13,16 +19,29 @@ const VIEW_DIST_LIT := 320.0
 const HALF_FOV := deg_to_rad(34.0)
 const CATCH_DIST := 24.0
 
+# Hearing.
+const HEAR_RANGE := 330.0        # how far a loudness-1.0 noise carries with no walls
+const HEAR_THRESHOLD := 0.12     # quieter than this (after falloff + walls) = unheard
+const WALL_MUFFLE := 0.32        # a wall between guard and the sound dampens it to this
+const HEAR_GAIN := 0.9           # how fast a heard noise raises suspicion
+const INVESTIGATE_AT := 0.22     # suspicion above this (but below alert) = go and look
+const SEE_FILL := 1.7            # how fast seeing you (unlit) fills suspicion
+const SUSPICION_DECAY := 0.45    # how fast suspicion drains when it senses nothing
+
 const GoblinScript := preload("res://scripts/player.gd")
 
 var waypoints: PackedVector2Array = PackedVector2Array()
 var facing := Vector2.RIGHT
 var alerted := false
+var investigating := false
 var suspicion := 0.0
+var heard_pos := Vector2.ZERO      # where the last heard noise came from (look here)
 var _wp := 0
 var _player: GoblinScript = null
-var _hearing := false
+var _last_seen := Vector2.ZERO
+var _tension := 0.0
 var _was_alerted := false
+var _was_active := false           # was chasing or investigating last frame
 
 signal caught_player
 signal spotted          # emitted the instant it becomes alerted (for an "OI!")
@@ -45,40 +64,70 @@ func _ready() -> void:
 	cs.shape = rect
 	add_child(cs)
 
+func set_tension(t: float) -> void:
+	_tension = clampf(t, 0.0, 1.0)
+
+## Called (via the level) whenever the goblin makes a noise. Sound that survives
+## distance-falloff and wall-muffling raises suspicion and marks where to look —
+## but it caps below full alert, so noise never nabs you on its own.
+func hear_noise(source: Vector2, loudness: float) -> void:
+	if _player == null or alerted:
+		return
+	var dist := global_position.distance_to(source)
+	if dist >= HEAR_RANGE:
+		return
+	var perceived := loudness * (1.0 - dist / HEAR_RANGE)
+	if not _has_line_of_sight(source):
+		perceived *= WALL_MUFFLE
+	var thresh := HEAR_THRESHOLD * (1.0 - 0.45 * _tension)   # sharper ears near dawn
+	if perceived < thresh:
+		return
+	heard_pos = source
+	suspicion = minf(0.95, suspicion + perceived * HEAR_GAIN)
+
 func _physics_process(delta: float) -> void:
 	var seen := _can_see_player()
-	var heard := _can_hear_player()
-	_hearing = heard
-
-	if seen or heard:
-		if seen and _player != null and _player.is_lit:
+	if seen and _player != null:
+		_last_seen = _player.global_position
+		heard_pos = _player.global_position
+		if _player.is_lit:
 			suspicion = 1.0
 		else:
-			suspicion = minf(1.0, suspicion + 1.7 * delta)
+			suspicion = minf(1.0, suspicion + SEE_FILL * delta)
 	else:
-		suspicion = maxf(0.0, suspicion - 0.5 * delta)
+		suspicion = maxf(0.0, suspicion - SUSPICION_DECAY * delta)
 
 	if suspicion >= 1.0:
 		alerted = true
 	elif suspicion <= 0.0:
 		alerted = false
+	investigating = not alerted and suspicion >= INVESTIGATE_AT
 
 	if alerted and not _was_alerted:
 		spotted.emit()
-	if _was_alerted and not alerted:
-		_wp = _nearest_waypoint()
 	_was_alerted = alerted
 
+	var patrol_speed := PATROL_SPEED * (1.0 + 0.5 * _tension)
 	var target := global_position
 	var speed := 0.0
 	if alerted and _player != null:
-		target = _player.global_position
-		speed = CHASE_SPEED
+		target = _player.global_position if seen else _last_seen
+		speed = CHASE_SPEED * (1.0 + 0.15 * _tension)
+	elif investigating:
+		target = heard_pos
+		speed = patrol_speed * 1.5
+		if global_position.distance_to(target) < 8.0:
+			speed = 0.0          # arrived — stand and scan while suspicion drains
 	elif waypoints.size() > 0:
 		target = waypoints[_wp]
-		speed = PATROL_SPEED
+		speed = patrol_speed
 		if global_position.distance_to(target) < 6.0:
 			_wp = (_wp + 1) % waypoints.size()
+
+	# Just gave up a chase/search? Rejoin the patrol loop at its nearest point.
+	if _was_active and not alerted and not investigating:
+		_wp = _nearest_waypoint()
+	_was_active = alerted or investigating
 
 	var to_target := target - global_position
 	if to_target.length() > 1.0 and speed > 0.0:
@@ -105,14 +154,6 @@ func _can_see_player() -> bool:
 	if absf(facing.angle_to(to)) > HALF_FOV:
 		return false
 	return _has_line_of_sight(_player.global_position)
-
-func _can_hear_player() -> bool:
-	if _player == null:
-		return false
-	var r := _player.noise_radius()
-	if r < 8.0:
-		return false
-	return global_position.distance_to(_player.global_position) < r
 
 func _has_line_of_sight(point: Vector2) -> bool:
 	var space := get_world_2d().direct_space_state
@@ -151,10 +192,10 @@ func _draw() -> void:
 	draw_rect(Rect2(-16, -16, 32, 32), Color(0.5, 0.15, 0.15), false, 2.0)
 	draw_line(Vector2.ZERO, facing * 22.0, Color.WHITE, 2.0)
 
-	# State pips.
+	# State pip: red = chasing, orange = investigating a noise, amber = a niggle.
 	if alerted:
-		draw_circle(Vector2(0, -26), 5.0, Color(1, 0.15, 0.15))     # chasing
+		draw_circle(Vector2(0, -26), 5.0, Color(1, 0.15, 0.15))
+	elif investigating:
+		draw_circle(Vector2(0, -26), 4.0, Color(1, 0.55, 0.1))
 	elif suspicion > 0.05:
-		draw_circle(Vector2(0, -26), 4.0, Color(1, 0.7, 0.1))       # suspicious
-	if _hearing and not alerted:
-		draw_circle(Vector2(14, -26), 3.5, Color(0.4, 0.8, 1.0))    # heard you
+		draw_circle(Vector2(0, -26), 4.0, Color(1, 0.7, 0.1))
