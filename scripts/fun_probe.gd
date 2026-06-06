@@ -43,7 +43,7 @@ const REAL_THRESH := 0.6              # item.mem above this -> draw the real shi
 const Q_MIN := 0.05                   # below this -> "?" gone (forgotten)
 
 var _player: GoblinScript
-var _guard: GuardScript
+var _guards: Array = []       # the tall-folk on patrol (noise routed to all)
 
 var _wall_rects: Array[Rect2] = []
 var _loot: Array = []        # {pos, value, weight, taken}
@@ -61,12 +61,18 @@ var _tint: ColorRect
 var _overlay: Node2D          # light-immune layer that keeps crit cues bright in the dark
 var _fog: Node2D              # the memory-fog draw node (on its own CanvasLayer)
 var _mem := PackedFloat32Array()   # per-cell visibility memory (0 black .. 1 clear)
+var _fog_img: Image                # COLS x ROWS image the fog texture is built from
+var _fog_tex: ImageTexture         # the fog, drawn as one stretched quad
+var _astar := AStarGrid2D.new()    # guard navigation grid (paths through doorways)
+var _ray := PhysicsRayQueryParameters2D.new()   # reused ray query (avoids per-call allocs)
+var _lantern_baked := false        # have we baked each lantern's lit cells yet?
 var _font: Font
 
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
 	_init_fog()
 	_build_walls()
+	_build_nav()
 	_build_stuff()
 	_build_actors()
 	_build_hud()
@@ -74,14 +80,19 @@ func _ready() -> void:
 func _init_fog() -> void:
 	# The memory fog lives on its own CanvasLayer above the world (so it covers
 	# the self-drawing walls/player/guard) but below the crit-cue overlay + HUD.
+	# It's drawn as ONE small COLS x ROWS texture stretched over the play area.
 	_mem.resize(COLS * ROWS)
 	_mem.fill(0.0)
+	_ray.collision_mask = 0b01
+	_fog_img = Image.create(COLS, ROWS, false, Image.FORMAT_RGBA8)
+	_fog_img.fill(Color(0.02, 0.02, 0.05, 1.0))   # start fully black (no startup flash before the first update)
+	_fog_tex = ImageTexture.create_from_image(_fog_img)
 	var fog_layer := CanvasLayer.new()
 	fog_layer.layer = 1
-	fog_layer.follow_viewport_enabled = true
 	add_child(fog_layer)
 	var fog := _FogDraw.new()
 	fog.probe = self
+	fog.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST   # crisp fog cells
 	fog_layer.add_child(fog)
 	_fog = fog
 
@@ -145,24 +156,40 @@ func _build_actors() -> void:
 	_player.position = PLAYER_START
 	add_child(_player)
 
-	_guard = GuardScript.new()
-	add_child(_guard)
-	# Guard loops the central room (R3) — the chokepoint the goblin must cross.
-	# (Waypoints stay inside one room: the guard has no doorway pathfinding yet.)
-	_guard.setup(PackedVector2Array([
+	# Guard A — a big slow "brute" looping the central room (R3), the chokepoint.
+	var brute := GuardScript.new()
+	brute.nav = self           # pathfinds through doorways via the level's A* grid
+	add_child(brute)
+	brute.setup(PackedVector2Array([
 		Vector2(400, 100), Vector2(560, 100), Vector2(560, 460), Vector2(400, 460),
 	]), _player)
-	_guard.caught_player.connect(_on_caught)
-	_guard.spotted.connect(_on_spotted)
-	# Footsteps reach the guard's ears through the noise router.
+	_guards.append(brute)
+
+	# Guard B — a faster "scout" prowling the right-side rooms (R4 <-> R5); now that
+	# guards pathfind, its patrol route crosses the doorway between them.
+	var scout := GuardScript.new()
+	scout.nav = self
+	scout.patrol_speed = 64.0
+	scout.chase_speed = 122.0
+	scout.view_dist = 235.0
+	scout.body_color = Color(0.85, 0.5, 0.2)   # orange — tells it apart from the brute
+	add_child(scout)
+	scout.setup(PackedVector2Array([
+		Vector2(760, 100), Vector2(900, 130), Vector2(900, 450), Vector2(720, 440),
+	]), _player)
+	_guards.append(scout)
+
+	for g in _guards:
+		g.caught_player.connect(_on_caught)
+		g.spotted.connect(_on_spotted.bind(g))
+	# Footsteps reach every guard's ears through the noise router.
 	_player.noise_made.connect(_emit_noise)
 
 func _build_hud() -> void:
-	# Crit-cue overlay on its own CanvasLayer (immune to the night CanvasModulate),
-	# so guard markers, floaters, and the dawn vignette stay readable in the dark.
+	# Crit-cue overlay on its own CanvasLayer (above the fog), so loot, guard
+	# markers, floaters, and the dawn vignette stay readable through the dark.
 	var overlay_layer := CanvasLayer.new()
 	overlay_layer.layer = 2
-	overlay_layer.follow_viewport_enabled = true   # stay aligned if a camera is added later
 	add_child(overlay_layer)
 	var ov := _OverlayDraw.new()
 	ov.probe = self
@@ -218,7 +245,9 @@ func _physics_process(delta: float) -> void:
 
 	# Dawn — not a cliff: the last stretch ramps tension (guards quicken, ears sharpen).
 	_time_left -= delta
-	_guard.set_tension(clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0))
+	var tension := clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0)
+	for g in _guards:
+		g.set_tension(tension)
 
 	# Win first, so reaching the OUT door (with loot) or smashing the gate in
 	# frenzy on the very last frame counts as a win, not a dawn loss.
@@ -264,8 +293,8 @@ func _input(event: InputEvent) -> void:
 ## Route a noise event from somewhere in the world to everything that can hear.
 ## (One guard today; a loop over a guard list tomorrow.)
 func _emit_noise(pos: Vector2, loudness: float) -> void:
-	if _guard != null:
-		_guard.hear_noise(pos, loudness)
+	for g in _guards:
+		g.hear_noise(pos, loudness)
 
 ## Is the goblin lit? Only by a burning lantern within reach AND with no wall
 ## between — so a wall (or a smashed-out lantern) carves a safe pocket of dark.
@@ -280,9 +309,9 @@ func _lit_by_any() -> bool:
 	return false
 
 func _clear(from: Vector2, to: Vector2) -> bool:
-	var space := get_world_2d().direct_space_state
-	var query := PhysicsRayQueryParameters2D.create(from, to, 0b01)
-	return space.intersect_ray(query).is_empty()
+	_ray.from = from
+	_ray.to = to
+	return get_world_2d().direct_space_state.intersect_ray(_ray).is_empty()
 
 # --- Memory fog -----------------------------------------------------------
 
@@ -303,6 +332,10 @@ func _reveal_box(center: Vector2, reach: float) -> Rect2i:
 ## currently see (its cone, with line-of-sight) and cells a burning lantern lights
 ## (so lit rooms glow). Finally update each shiny's remembered-ness.
 func _update_fog(delta: float) -> void:
+	if not _lantern_baked:
+		_bake_lanterns()     # one-time: which cells each lantern lights (walls are live now)
+		_lantern_baked = true
+
 	for i in range(_mem.size()):
 		_mem[i] = maxf(_mem[i] - FADE * delta, 0.0)
 
@@ -320,21 +353,17 @@ func _update_fog(delta: float) -> void:
 			elif d <= CONE_LEN and absf(f.angle_to(v)) <= CONE_HALF and _clear(gp, c):
 				_mem[_cell_idx(col, row)] = 1.0
 
-	# (b) Lit lanterns light up their room (re-revealed every frame while lit).
+	# (b) Lit lanterns light up their room. The lantern->cell visibility is baked
+	# once (walls are static); each frame we only test the goblin's line-of-sight,
+	# so a lit room behind a wall stays dark until you can see into it.
 	for L in _lanterns:
 		if not L.lit:
 			continue
-		var lb := _reveal_box(L.pos, L.radius)
-		for row in range(lb.position.y, lb.position.y + lb.size.y + 1):
-			for col in range(lb.position.x, lb.position.x + lb.size.x + 1):
-				var idx := _cell_idx(col, row)
-				if _mem[idx] >= 1.0:
-					continue
-				var c := _cell_center(col, row)
-				# Lit only where the lantern reaches it AND the goblin can see it —
-				# so a lit room behind a wall stays dark until you can see into it.
-				if c.distance_to(L.pos) <= L.radius and _clear(L.pos, c) and _clear(gp, c):
-					_mem[idx] = 1.0
+		for idx in L.cells:
+			if _mem[idx] >= 1.0:
+				continue
+			if _clear(gp, _cell_center(idx % COLS, idx / COLS)):
+				_mem[idx] = 1.0
 
 	# (c) Per-shiny memory from the cell it sits in (no extra raycasts).
 	for item in _loot:
@@ -345,6 +374,69 @@ func _update_fog(delta: float) -> void:
 			item.mem = 1.0
 		else:
 			item.mem = maxf(0.0, item.mem - ITEM_FADE * delta)
+
+	# Bake the grid into the fog texture (drawn as one quad in _draw_fog).
+	for i in range(_mem.size()):
+		var m := _mem[i]
+		var a := 0.0 if m >= SEEN_T else 1.0 - m
+		_fog_img.set_pixel(i % COLS, i / COLS, Color(0.02, 0.02, 0.05, a))
+	_fog_tex.update(_fog_img)
+
+func _bake_lanterns() -> void:
+	# Per lantern, the cells within reach that have line-of-sight to it. Walls are
+	# static so this never changes; smashing a lantern just stops it being used.
+	for L in _lanterns:
+		var cells := PackedInt32Array()
+		var lb := _reveal_box(L.pos, L.radius)
+		for row in range(lb.position.y, lb.position.y + lb.size.y + 1):
+			for col in range(lb.position.x, lb.position.x + lb.size.x + 1):
+				var c := _cell_center(col, row)
+				if c.distance_to(L.pos) <= L.radius and _clear(L.pos, c):
+					cells.append(_cell_idx(col, row))
+		L["cells"] = cells
+
+# --- Guard navigation -----------------------------------------------------
+
+func _build_nav() -> void:
+	# An A* grid over the same cells as the fog; cells overlapping a (slightly
+	# grown) wall are solid, so guard paths keep off walls and thread doorways.
+	_astar.region = Rect2i(0, 0, COLS, ROWS)
+	_astar.cell_size = Vector2(CELL, CELL)
+	_astar.offset = Vector2(CELL / 2.0, CELL / 2.0)
+	_astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES
+	_astar.update()
+	for row in range(ROWS):
+		for col in range(COLS):
+			var c := _cell_center(col, row)
+			var solid := false
+			for r in _wall_rects:
+				if r.grow(14.0).has_point(c):
+					solid = true
+					break
+			_astar.set_point_solid(Vector2i(col, row), solid)
+
+## A walkable path (cell centres) from one world point to another, threading
+## doorways. Empty if no route — the guard then falls back to a straight line.
+func nav_path(from: Vector2, to: Vector2) -> PackedVector2Array:
+	var a := _world_to_id(from)
+	var b := _world_to_id(to)
+	if _astar.is_point_solid(a):
+		a = _nearest_free(a)
+	if _astar.is_point_solid(b):
+		b = _nearest_free(b)
+	return _astar.get_point_path(a, b)
+
+func _world_to_id(pos: Vector2) -> Vector2i:
+	return Vector2i(clampi(int(pos.x) / CELL, 0, COLS - 1), clampi(int(pos.y) / CELL, 0, ROWS - 1))
+
+func _nearest_free(id: Vector2i) -> Vector2i:
+	for radius in range(1, 7):
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				var n := id + Vector2i(dx, dy)
+				if n.x >= 0 and n.x < COLS and n.y >= 0 and n.y < ROWS and not _astar.is_point_solid(n):
+					return n
+	return id
 
 func _smash_near(pos: Vector2, radius: float, all_in_range: bool) -> void:
 	for L in _lanterns:
@@ -377,9 +469,9 @@ func _on_caught() -> void:
 	if _state == "play":
 		_lose("NABBED! A great tall-folk fist scoops you up by the scruff.")
 
-func _on_spotted() -> void:
+func _on_spotted(g) -> void:
 	if _state == "play":
-		_spawn_text(_guard.global_position, "OI!!", Color(1, 0.3, 0.3))
+		_spawn_text(g.global_position, "OI!!", Color(1, 0.3, 0.3))
 
 func _win() -> void:
 	if _state != "play":
@@ -399,9 +491,10 @@ func _show_banner(text: String) -> void:
 	_banner.visible = true
 	# Freeze the world behind the banner.
 	_player.velocity = Vector2.ZERO
-	_guard.velocity = Vector2.ZERO
 	_player.set_physics_process(false)
-	_guard.set_physics_process(false)
+	for g in _guards:
+		g.velocity = Vector2.ZERO
+		g.set_physics_process(false)
 
 func _update_info() -> void:
 	var lines := PackedStringArray()
@@ -420,11 +513,18 @@ func _update_info() -> void:
 		flags += "[DAWN COMING!]  "
 	if _player.is_lit:
 		flags += "[IN THE LIGHT!]  "
-	if _guard.investigating:
+	var any_inv := false
+	var any_search := false
+	var any_alert := false
+	for g in _guards:
+		any_inv = any_inv or g.investigating
+		any_search = any_search or g.searching
+		any_alert = any_alert or g.alerted
+	if any_inv:
 		flags += "[GUARD HEARD SOMETHING]  "
-	if _guard.searching:
+	if any_search:
 		flags += "[GUARD SEARCHING]  "
-	if _guard.alerted:
+	if any_alert:
 		flags += "[GUARD ON YOU!]"
 	if flags != "":
 		lines.append(flags.strip_edges())
@@ -436,8 +536,8 @@ func _meter(v: float, cells: int) -> String:
 
 func _draw() -> void:
 	draw_rect(Rect2(0, 0, 960, 540), Color(0.08, 0.08, 0.12))
-	# Lanterns: a warm danger-pool for lit ones, drawn on the world canvas so the
-	# night hides it — you only see a pool when your vision cone falls across it.
+	# Lanterns: a warm danger-pool for lit ones, drawn on the world canvas under
+	# the memory fog — you only see a pool where a cell is currently revealed.
 	for L in _lanterns:
 		if L.lit:
 			draw_circle(L.pos, L.radius, Color(1.0, 0.82, 0.4, 0.34))
@@ -463,22 +563,15 @@ func _draw() -> void:
 		if not p.broken:
 			draw_rect(Rect2(p.pos.x - 7, p.pos.y - 7, 14, 14), Color(0.5, 0.4, 0.3))
 			draw_rect(Rect2(p.pos.x - 7, p.pos.y - 7, 14, 14), Color(0.3, 0.24, 0.18), false, 1.5)
-	# Loot — only the real diamond when it's currently seen / freshly remembered;
-	# once forgotten it becomes a "?" on the overlay instead (see _draw_overlay).
-	for item in _loot:
-		if not item.taken and item.get("mem", 0.0) >= REAL_THRESH:
-			var s: float = 9.0 if item.value >= 3 else 6.0
-			var p: Vector2 = item.pos
-			draw_colored_polygon(PackedVector2Array([
-				p + Vector2(0, -s), p + Vector2(s * 0.8, 0), p + Vector2(0, s), p + Vector2(-s * 0.8, 0),
-			]), Color(1.0, 0.85, 0.2))
+	# (Loot and its forgotten "?" are drawn on the overlay, above the fog, so they
+	# read crisp — see _draw_overlay.)
 
 func _label(pos: Vector2, text: String, color: Color) -> void:
 	if _font != null:
 		draw_string(_font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, color)
 
-## A light-immune sibling canvas: redraws the gameplay-critical cues that must
-## stay readable even when the world is dimmed by the night CanvasModulate.
+## A canvas above the fog: redraws the gameplay-critical cues (loot, guard
+## markers, floaters, dawn vignette) so they stay readable through the dark.
 class _OverlayDraw extends Node2D:
 	var probe
 	func _draw() -> void:
@@ -486,20 +579,28 @@ class _OverlayDraw extends Node2D:
 			probe._draw_overlay(self)
 
 func _draw_overlay(cv: CanvasItem) -> void:
-	# Where the guard is heading to investigate a noise it heard.
-	if _guard != null and _guard.investigating:
-		var hp: Vector2 = _guard.heard_pos
-		cv.draw_arc(hp, 15.0, 0.0, TAU, 24, Color(1, 0.55, 0.1, 0.6), 2.0)
-		_label_on(cv, hp + Vector2(-3, 5), "?", Color(1, 0.6, 0.15, 0.95))
-	# Where the guard is searching after losing sight of you.
-	elif _guard != null and _guard.searching:
-		var ls: Vector2 = _guard.last_seen
-		cv.draw_arc(ls, 15.0, 0.0, TAU, 24, Color(0.4, 0.8, 1.0, 0.6), 2.0)
-		_label_on(cv, ls + Vector2(-30, 5), "where'd it go?", Color(0.5, 0.85, 1.0, 0.9))
+	# Where each guard is heading to investigate a noise / search after losing you.
+	for g in _guards:
+		if g.investigating:
+			cv.draw_arc(g.heard_pos, 15.0, 0.0, TAU, 24, Color(1, 0.55, 0.1, 0.6), 2.0)
+			_label_on(cv, g.heard_pos + Vector2(-3, 5), "?", Color(1, 0.6, 0.15, 0.95))
+		elif g.searching:
+			cv.draw_arc(g.last_seen, 15.0, 0.0, TAU, 24, Color(0.4, 0.8, 1.0, 0.6), 2.0)
+			_label_on(cv, g.last_seen + Vector2(-30, 5), "where'd it go?", Color(0.5, 0.85, 1.0, 0.9))
 	# Dawn closing in — warm red creeps from the edges (kept bright over the fog).
 	if _state == "play" and _time_left < DAWN_RAMP:
 		var t: float = clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0)
 		cv.draw_rect(Rect2(0, 0, 960, 540), Color(0.95, 0.2, 0.1, 0.7 * t), false, 6.0 + 22.0 * t)
+	# Shinies the goblin sees / freshly remembers — drawn above the fog so they
+	# read crisp (never muddied by a half-faded fog cell).
+	for item in _loot:
+		if item.taken or item.get("mem", 0.0) < REAL_THRESH:
+			continue
+		var s: float = 9.0 if item.value >= 3 else 6.0
+		var p: Vector2 = item.pos
+		cv.draw_colored_polygon(PackedVector2Array([
+			p + Vector2(0, -s), p + Vector2(s * 0.8, 0), p + Vector2(0, s), p + Vector2(-s * 0.8, 0),
+		]), Color(1.0, 0.85, 0.2))
 	# Forgotten shinies — a fading "?" where the goblin remembers seeing loot.
 	for item in _loot:
 		if item.taken:
@@ -520,7 +621,8 @@ func _label_on(cv: CanvasItem, pos: Vector2, text: String, color: Color) -> void
 	if _font != null:
 		cv.draw_string(_font, pos, text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, color)
 
-## The memory fog: a near-black rect over every cell, alpha = how forgotten it is.
+## The memory fog: one small COLS x ROWS texture (built in _update_fog), stretched
+## over the play area in a single draw instead of thousands of per-cell rects.
 class _FogDraw extends Node2D:
 	var probe
 	func _draw() -> void:
@@ -528,12 +630,4 @@ class _FogDraw extends Node2D:
 			probe._draw_fog(self)
 
 func _draw_fog(cv: CanvasItem) -> void:
-	for row in range(ROWS):
-		for col in range(COLS):
-			var m := _mem[_cell_idx(col, row)]
-			if m >= SEEN_T:
-				continue                              # clear — skip (free)
-			var a := 1.0 - m
-			if a <= 0.02:
-				continue
-			cv.draw_rect(Rect2(col * CELL, row * CELL, CELL, CELL), Color(0.02, 0.02, 0.05, a))
+	cv.draw_texture_rect(_fog_tex, Rect2(0, 0, COLS * CELL, ROWS * CELL), false)

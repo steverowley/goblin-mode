@@ -24,6 +24,7 @@ var view_dist_lit := 320.0
 var half_fov := deg_to_rad(34.0)
 var hear_range := 330.0          # how far a loudness-1.0 noise carries with no walls
 var hear_threshold := 0.12       # quieter than this (after falloff + walls) = unheard
+var body_color := Color(0.8, 0.3, 0.3)   # greybox body tint (per guard type)
 
 # --- Shared behaviour tuning (the same for every guard). ---
 const WALL_MUFFLE := 0.32        # a wall between guard and the sound dampens it to this
@@ -58,6 +59,12 @@ var _search_t := 0.0
 var _investigate_t := 0.0
 var _caught := false
 var _cone_pts := PackedVector2Array()   # the drawn vision cone, clipped to walls
+var nav                                  # the level — provides nav_path() for doorway pathfinding
+var _path := PackedVector2Array()        # current A* path to the move target
+var _pi := 0                             # index of the next path node
+var _path_goal := Vector2.ZERO           # the goal the current path was built for
+var _repath_t := 0.0                     # countdown to the next path recompute
+var _ray := PhysicsRayQueryParameters2D.new()   # reused ray query (avoids per-call allocs)
 
 signal caught_player
 signal spotted          # emitted the instant it freshly spots you (for an "OI!")
@@ -79,6 +86,7 @@ func _ready() -> void:
 	rect.size = Vector2(32, 32)
 	cs.shape = rect
 	add_child(cs)
+	_ray.collision_mask = 0b01
 
 func set_tension(t: float) -> void:
 	_tension = clampf(t, 0.0, 1.0)
@@ -133,29 +141,29 @@ func _can_see_player() -> bool:
 	return _has_line_of_sight(_player.global_position)
 
 func _has_line_of_sight(point: Vector2) -> bool:
-	var space := get_world_2d().direct_space_state
-	var query := PhysicsRayQueryParameters2D.create(global_position, point, 0b01)
-	return space.intersect_ray(query).is_empty()
+	_ray.from = global_position
+	_ray.to = point
+	return get_world_2d().direct_space_state.intersect_ray(_ray).is_empty()
 
 ## Build the drawn cone as a fan of rays that STOP at the first wall, so the
 ## visible cone matches the line-of-sight the guard actually has.
 func _compute_cone() -> void:
-	_cone_pts = PackedVector2Array()
-	_cone_pts.append(Vector2.ZERO)
+	var steps := 18
+	var n := steps + 2
+	if _cone_pts.size() != n:
+		_cone_pts.resize(n)
+	_cone_pts[0] = Vector2.ZERO
 	var lit := _player != null and _player.is_lit
 	var view := view_dist_lit if lit else view_dist
 	var space := get_world_2d().direct_space_state
-	var steps := 18
 	var a0 := facing.angle() - half_fov
 	for i in range(steps + 1):
 		var a := a0 + (2.0 * half_fov) * (float(i) / float(steps))
 		var d := Vector2(cos(a), sin(a))
-		var q := PhysicsRayQueryParameters2D.create(global_position, global_position + d * view, 0b01)
-		var hit := space.intersect_ray(q)
-		if hit.is_empty():
-			_cone_pts.append(d * view)
-		else:
-			_cone_pts.append(hit.position - global_position)
+		_ray.from = global_position
+		_ray.to = global_position + d * view
+		var hit := space.intersect_ray(_ray)
+		_cone_pts[i + 1] = (d * view) if hit.is_empty() else (hit.position - global_position)
 
 # --- BRAIN ----------------------------------------------------------------
 
@@ -231,9 +239,15 @@ func _act(delta: float) -> void:
 				if global_position.distance_to(target) < 6.0:
 					_wp = (_wp + 1) % waypoints.size()
 
-	var to_target := target - global_position
-	if to_target.length() > 1.0 and speed > 0.0:
-		var d := to_target.normalized()
+	# Steer along an A* path through doorways toward the target (the guard can't
+	# walk through walls). Falls back to a straight line if there's no nav/route.
+	var sub := target
+	if speed > 0.0 and nav != null:
+		sub = _path_step(target, delta)
+
+	var to_sub := sub - global_position
+	if to_sub.length() > 1.0 and speed > 0.0:
+		var d := to_sub.normalized()
 		velocity = d * speed
 		facing = facing.lerp(d, 0.16).normalized()
 	else:
@@ -242,6 +256,21 @@ func _act(delta: float) -> void:
 		if state == State.SEARCH or state == State.INVESTIGATE:
 			facing = facing.rotated(SCAN_RATE * delta)
 	move_and_slide()
+
+## The next path node to steer toward on the way to `goal`, recomputing the A*
+## path when the goal shifts or the recompute timer lapses.
+func _path_step(goal: Vector2, delta: float) -> Vector2:
+	_repath_t -= delta
+	if _path.is_empty() or _path_goal.distance_to(goal) > 24.0 or _repath_t <= 0.0:
+		_path = nav.nav_path(global_position, goal)
+		_path_goal = goal
+		_repath_t = 0.3
+		_pi = 0
+	while _pi < _path.size() and global_position.distance_to(_path[_pi]) < 12.0:
+		_pi += 1
+	if _pi < _path.size():
+		return _path[_pi]
+	return goal
 
 func _nearest_waypoint() -> int:
 	var best := 0
@@ -266,8 +295,8 @@ func _draw() -> void:
 		draw_colored_polygon(_cone_pts, cone_col)
 
 	# Big tall-folk body (deliberately larger than the goblin).
-	draw_rect(Rect2(-16, -16, 32, 32), Color(0.8, 0.3, 0.3))
-	draw_rect(Rect2(-16, -16, 32, 32), Color(0.5, 0.15, 0.15), false, 2.0)
+	draw_rect(Rect2(-16, -16, 32, 32), body_color)
+	draw_rect(Rect2(-16, -16, 32, 32), body_color.darkened(0.45), false, 2.0)
 	draw_line(Vector2.ZERO, facing * 22.0, Color.WHITE, 2.0)
 
 	# State pip: red chase, sky-blue search, orange investigate, amber niggle.
