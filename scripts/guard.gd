@@ -24,6 +24,7 @@ var view_dist_lit := 320.0
 var half_fov := deg_to_rad(34.0)
 var hear_range := 330.0          # how far a loudness-1.0 noise carries with no walls
 var hear_threshold := 0.12       # quieter than this (after falloff + walls) = unheard
+var body_color := Color(0.8, 0.3, 0.3)   # greybox body tint (per guard type)
 
 # --- Shared behaviour tuning (the same for every guard). ---
 const WALL_MUFFLE := 0.32        # a wall between guard and the sound dampens it to this
@@ -294,8 +295,8 @@ func _draw() -> void:
 		draw_colored_polygon(_cone_pts, cone_col)
 
 	# Big tall-folk body (deliberately larger than the goblin).
-	draw_rect(Rect2(-16, -16, 32, 32), Color(0.8, 0.3, 0.3))
-	draw_rect(Rect2(-16, -16, 32, 32), Color(0.5, 0.15, 0.15), false, 2.0)
+	draw_rect(Rect2(-16, -16, 32, 32), body_color)
+	draw_rect(Rect2(-16, -16, 32, 32), body_color.darkened(0.45), false, 2.0)
 	draw_line(Vector2.ZERO, facing * 22.0, Color.WHITE, 2.0)
 
 	# State pip: red chase, sky-blue search, orange investigate, amber niggle.

@@ -43,7 +43,7 @@ const REAL_THRESH := 0.6              # item.mem above this -> draw the real shi
 const Q_MIN := 0.05                   # below this -> "?" gone (forgotten)
 
 var _player: GoblinScript
-var _guard: GuardScript
+var _guards: Array = []       # the tall-folk on patrol (noise routed to all)
 
 var _wall_rects: Array[Rect2] = []
 var _loot: Array = []        # {pos, value, weight, taken}
@@ -156,17 +156,33 @@ func _build_actors() -> void:
 	_player.position = PLAYER_START
 	add_child(_player)
 
-	_guard = GuardScript.new()
-	_guard.nav = self          # the guard pathfinds through doorways via the level's A* grid
-	add_child(_guard)
-	# Guard loops the central room (R3) — the chokepoint the goblin must cross.
-	# It can now path through doorways to chase and investigate across rooms.
-	_guard.setup(PackedVector2Array([
+	# Guard A — a big slow "brute" looping the central room (R3), the chokepoint.
+	var brute := GuardScript.new()
+	brute.nav = self           # pathfinds through doorways via the level's A* grid
+	add_child(brute)
+	brute.setup(PackedVector2Array([
 		Vector2(400, 100), Vector2(560, 100), Vector2(560, 460), Vector2(400, 460),
 	]), _player)
-	_guard.caught_player.connect(_on_caught)
-	_guard.spotted.connect(_on_spotted)
-	# Footsteps reach the guard's ears through the noise router.
+	_guards.append(brute)
+
+	# Guard B — a faster "scout" prowling the right-side rooms (R4 <-> R5); now that
+	# guards pathfind, its patrol route crosses the doorway between them.
+	var scout := GuardScript.new()
+	scout.nav = self
+	scout.patrol_speed = 64.0
+	scout.chase_speed = 122.0
+	scout.view_dist = 235.0
+	scout.body_color = Color(0.85, 0.5, 0.2)   # orange — tells it apart from the brute
+	add_child(scout)
+	scout.setup(PackedVector2Array([
+		Vector2(760, 100), Vector2(900, 130), Vector2(900, 450), Vector2(720, 440),
+	]), _player)
+	_guards.append(scout)
+
+	for g in _guards:
+		g.caught_player.connect(_on_caught)
+		g.spotted.connect(_on_spotted.bind(g))
+	# Footsteps reach every guard's ears through the noise router.
 	_player.noise_made.connect(_emit_noise)
 
 func _build_hud() -> void:
@@ -229,7 +245,9 @@ func _physics_process(delta: float) -> void:
 
 	# Dawn — not a cliff: the last stretch ramps tension (guards quicken, ears sharpen).
 	_time_left -= delta
-	_guard.set_tension(clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0))
+	var tension := clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0)
+	for g in _guards:
+		g.set_tension(tension)
 
 	# Win first, so reaching the OUT door (with loot) or smashing the gate in
 	# frenzy on the very last frame counts as a win, not a dawn loss.
@@ -275,8 +293,8 @@ func _input(event: InputEvent) -> void:
 ## Route a noise event from somewhere in the world to everything that can hear.
 ## (One guard today; a loop over a guard list tomorrow.)
 func _emit_noise(pos: Vector2, loudness: float) -> void:
-	if _guard != null:
-		_guard.hear_noise(pos, loudness)
+	for g in _guards:
+		g.hear_noise(pos, loudness)
 
 ## Is the goblin lit? Only by a burning lantern within reach AND with no wall
 ## between — so a wall (or a smashed-out lantern) carves a safe pocket of dark.
@@ -451,9 +469,9 @@ func _on_caught() -> void:
 	if _state == "play":
 		_lose("NABBED! A great tall-folk fist scoops you up by the scruff.")
 
-func _on_spotted() -> void:
+func _on_spotted(g) -> void:
 	if _state == "play":
-		_spawn_text(_guard.global_position, "OI!!", Color(1, 0.3, 0.3))
+		_spawn_text(g.global_position, "OI!!", Color(1, 0.3, 0.3))
 
 func _win() -> void:
 	if _state != "play":
@@ -473,9 +491,10 @@ func _show_banner(text: String) -> void:
 	_banner.visible = true
 	# Freeze the world behind the banner.
 	_player.velocity = Vector2.ZERO
-	_guard.velocity = Vector2.ZERO
 	_player.set_physics_process(false)
-	_guard.set_physics_process(false)
+	for g in _guards:
+		g.velocity = Vector2.ZERO
+		g.set_physics_process(false)
 
 func _update_info() -> void:
 	var lines := PackedStringArray()
@@ -494,11 +513,18 @@ func _update_info() -> void:
 		flags += "[DAWN COMING!]  "
 	if _player.is_lit:
 		flags += "[IN THE LIGHT!]  "
-	if _guard.investigating:
+	var any_inv := false
+	var any_search := false
+	var any_alert := false
+	for g in _guards:
+		any_inv = any_inv or g.investigating
+		any_search = any_search or g.searching
+		any_alert = any_alert or g.alerted
+	if any_inv:
 		flags += "[GUARD HEARD SOMETHING]  "
-	if _guard.searching:
+	if any_search:
 		flags += "[GUARD SEARCHING]  "
-	if _guard.alerted:
+	if any_alert:
 		flags += "[GUARD ON YOU!]"
 	if flags != "":
 		lines.append(flags.strip_edges())
@@ -553,16 +579,14 @@ class _OverlayDraw extends Node2D:
 			probe._draw_overlay(self)
 
 func _draw_overlay(cv: CanvasItem) -> void:
-	# Where the guard is heading to investigate a noise it heard.
-	if _guard != null and _guard.investigating:
-		var hp: Vector2 = _guard.heard_pos
-		cv.draw_arc(hp, 15.0, 0.0, TAU, 24, Color(1, 0.55, 0.1, 0.6), 2.0)
-		_label_on(cv, hp + Vector2(-3, 5), "?", Color(1, 0.6, 0.15, 0.95))
-	# Where the guard is searching after losing sight of you.
-	elif _guard != null and _guard.searching:
-		var ls: Vector2 = _guard.last_seen
-		cv.draw_arc(ls, 15.0, 0.0, TAU, 24, Color(0.4, 0.8, 1.0, 0.6), 2.0)
-		_label_on(cv, ls + Vector2(-30, 5), "where'd it go?", Color(0.5, 0.85, 1.0, 0.9))
+	# Where each guard is heading to investigate a noise / search after losing you.
+	for g in _guards:
+		if g.investigating:
+			cv.draw_arc(g.heard_pos, 15.0, 0.0, TAU, 24, Color(1, 0.55, 0.1, 0.6), 2.0)
+			_label_on(cv, g.heard_pos + Vector2(-3, 5), "?", Color(1, 0.6, 0.15, 0.95))
+		elif g.searching:
+			cv.draw_arc(g.last_seen, 15.0, 0.0, TAU, 24, Color(0.4, 0.8, 1.0, 0.6), 2.0)
+			_label_on(cv, g.last_seen + Vector2(-30, 5), "where'd it go?", Color(0.5, 0.85, 1.0, 0.9))
 	# Dawn closing in — warm red creeps from the edges (kept bright over the fog).
 	if _state == "play" and _time_left < DAWN_RAMP:
 		var t: float = clampf(1.0 - _time_left / DAWN_RAMP, 0.0, 1.0)
