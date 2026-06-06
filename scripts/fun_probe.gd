@@ -61,12 +61,14 @@ var _tint: ColorRect
 var _overlay: Node2D          # light-immune layer that keeps crit cues bright in the dark
 var _fog: Node2D              # the memory-fog draw node (on its own CanvasLayer)
 var _mem := PackedFloat32Array()   # per-cell visibility memory (0 black .. 1 clear)
+var _astar := AStarGrid2D.new()    # guard navigation grid (paths through doorways)
 var _font: Font
 
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
 	_init_fog()
 	_build_walls()
+	_build_nav()
 	_build_stuff()
 	_build_actors()
 	_build_hud()
@@ -146,9 +148,10 @@ func _build_actors() -> void:
 	add_child(_player)
 
 	_guard = GuardScript.new()
+	_guard.nav = self          # the guard pathfinds through doorways via the level's A* grid
 	add_child(_guard)
 	# Guard loops the central room (R3) — the chokepoint the goblin must cross.
-	# (Waypoints stay inside one room: the guard has no doorway pathfinding yet.)
+	# It can now path through doorways to chase and investigate across rooms.
 	_guard.setup(PackedVector2Array([
 		Vector2(400, 100), Vector2(560, 100), Vector2(560, 460), Vector2(400, 460),
 	]), _player)
@@ -345,6 +348,49 @@ func _update_fog(delta: float) -> void:
 			item.mem = 1.0
 		else:
 			item.mem = maxf(0.0, item.mem - ITEM_FADE * delta)
+
+# --- Guard navigation -----------------------------------------------------
+
+func _build_nav() -> void:
+	# An A* grid over the same cells as the fog; cells overlapping a (slightly
+	# grown) wall are solid, so guard paths keep off walls and thread doorways.
+	_astar.region = Rect2i(0, 0, COLS, ROWS)
+	_astar.cell_size = Vector2(CELL, CELL)
+	_astar.offset = Vector2(CELL / 2.0, CELL / 2.0)
+	_astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES
+	_astar.update()
+	for row in range(ROWS):
+		for col in range(COLS):
+			var c := _cell_center(col, row)
+			var solid := false
+			for r in _wall_rects:
+				if r.grow(14.0).has_point(c):
+					solid = true
+					break
+			_astar.set_point_solid(Vector2i(col, row), solid)
+
+## A walkable path (cell centres) from one world point to another, threading
+## doorways. Empty if no route — the guard then falls back to a straight line.
+func nav_path(from: Vector2, to: Vector2) -> PackedVector2Array:
+	var a := _world_to_id(from)
+	var b := _world_to_id(to)
+	if _astar.is_point_solid(a):
+		a = _nearest_free(a)
+	if _astar.is_point_solid(b):
+		b = _nearest_free(b)
+	return _astar.get_point_path(a, b)
+
+func _world_to_id(pos: Vector2) -> Vector2i:
+	return Vector2i(clampi(int(pos.x) / CELL, 0, COLS - 1), clampi(int(pos.y) / CELL, 0, ROWS - 1))
+
+func _nearest_free(id: Vector2i) -> Vector2i:
+	for radius in range(1, 7):
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				var n := id + Vector2i(dx, dy)
+				if n.x >= 0 and n.x < COLS and n.y >= 0 and n.y < ROWS and not _astar.is_point_solid(n):
+					return n
+	return id
 
 func _smash_near(pos: Vector2, radius: float, all_in_range: bool) -> void:
 	for L in _lanterns:

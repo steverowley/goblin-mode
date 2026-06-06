@@ -58,6 +58,11 @@ var _search_t := 0.0
 var _investigate_t := 0.0
 var _caught := false
 var _cone_pts := PackedVector2Array()   # the drawn vision cone, clipped to walls
+var nav                                  # the level — provides nav_path() for doorway pathfinding
+var _path := PackedVector2Array()        # current A* path to the move target
+var _pi := 0                             # index of the next path node
+var _path_goal := Vector2.ZERO           # the goal the current path was built for
+var _repath_t := 0.0                     # countdown to the next path recompute
 
 signal caught_player
 signal spotted          # emitted the instant it freshly spots you (for an "OI!")
@@ -231,9 +236,15 @@ func _act(delta: float) -> void:
 				if global_position.distance_to(target) < 6.0:
 					_wp = (_wp + 1) % waypoints.size()
 
-	var to_target := target - global_position
-	if to_target.length() > 1.0 and speed > 0.0:
-		var d := to_target.normalized()
+	# Steer along an A* path through doorways toward the target (the guard can't
+	# walk through walls). Falls back to a straight line if there's no nav/route.
+	var sub := target
+	if speed > 0.0 and nav != null:
+		sub = _path_step(target, delta)
+
+	var to_sub := sub - global_position
+	if to_sub.length() > 1.0 and speed > 0.0:
+		var d := to_sub.normalized()
 		velocity = d * speed
 		facing = facing.lerp(d, 0.16).normalized()
 	else:
@@ -242,6 +253,21 @@ func _act(delta: float) -> void:
 		if state == State.SEARCH or state == State.INVESTIGATE:
 			facing = facing.rotated(SCAN_RATE * delta)
 	move_and_slide()
+
+## The next path node to steer toward on the way to `goal`, recomputing the A*
+## path when the goal shifts or the recompute timer lapses.
+func _path_step(goal: Vector2, delta: float) -> Vector2:
+	_repath_t -= delta
+	if _path.is_empty() or _path_goal.distance_to(goal) > 24.0 or _repath_t <= 0.0:
+		_path = nav.nav_path(global_position, goal)
+		_path_goal = goal
+		_repath_t = 0.3
+		_pi = 0
+	while _pi < _path.size() and global_position.distance_to(_path[_pi]) < 12.0:
+		_pi += 1
+	if _pi < _path.size():
+		return _path[_pi]
+	return goal
 
 func _nearest_waypoint() -> int:
 	var best := 0
