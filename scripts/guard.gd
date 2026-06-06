@@ -63,6 +63,7 @@ var _path := PackedVector2Array()        # current A* path to the move target
 var _pi := 0                             # index of the next path node
 var _path_goal := Vector2.ZERO           # the goal the current path was built for
 var _repath_t := 0.0                     # countdown to the next path recompute
+var _ray := PhysicsRayQueryParameters2D.new()   # reused ray query (avoids per-call allocs)
 
 signal caught_player
 signal spotted          # emitted the instant it freshly spots you (for an "OI!")
@@ -84,6 +85,7 @@ func _ready() -> void:
 	rect.size = Vector2(32, 32)
 	cs.shape = rect
 	add_child(cs)
+	_ray.collision_mask = 0b01
 
 func set_tension(t: float) -> void:
 	_tension = clampf(t, 0.0, 1.0)
@@ -138,29 +140,29 @@ func _can_see_player() -> bool:
 	return _has_line_of_sight(_player.global_position)
 
 func _has_line_of_sight(point: Vector2) -> bool:
-	var space := get_world_2d().direct_space_state
-	var query := PhysicsRayQueryParameters2D.create(global_position, point, 0b01)
-	return space.intersect_ray(query).is_empty()
+	_ray.from = global_position
+	_ray.to = point
+	return get_world_2d().direct_space_state.intersect_ray(_ray).is_empty()
 
 ## Build the drawn cone as a fan of rays that STOP at the first wall, so the
 ## visible cone matches the line-of-sight the guard actually has.
 func _compute_cone() -> void:
-	_cone_pts = PackedVector2Array()
-	_cone_pts.append(Vector2.ZERO)
+	var steps := 18
+	var n := steps + 2
+	if _cone_pts.size() != n:
+		_cone_pts.resize(n)
+	_cone_pts[0] = Vector2.ZERO
 	var lit := _player != null and _player.is_lit
 	var view := view_dist_lit if lit else view_dist
 	var space := get_world_2d().direct_space_state
-	var steps := 18
 	var a0 := facing.angle() - half_fov
 	for i in range(steps + 1):
 		var a := a0 + (2.0 * half_fov) * (float(i) / float(steps))
 		var d := Vector2(cos(a), sin(a))
-		var q := PhysicsRayQueryParameters2D.create(global_position, global_position + d * view, 0b01)
-		var hit := space.intersect_ray(q)
-		if hit.is_empty():
-			_cone_pts.append(d * view)
-		else:
-			_cone_pts.append(hit.position - global_position)
+		_ray.from = global_position
+		_ray.to = global_position + d * view
+		var hit := space.intersect_ray(_ray)
+		_cone_pts[i + 1] = (d * view) if hit.is_empty() else (hit.position - global_position)
 
 # --- BRAIN ----------------------------------------------------------------
 
