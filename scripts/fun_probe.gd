@@ -138,13 +138,9 @@ func _physics_process(delta: float) -> void:
 	if _state != "play":
 		return
 
-	# Lit by any still-burning lantern?
-	var lit := false
-	for L in _lanterns:
-		if L.lit and _player.global_position.distance_to(L.pos) < L.radius:
-			lit = true
-			break
-	_player.is_lit = lit
+	# Lit by any still-burning lantern with a CLEAR line to the goblin — duck
+	# behind a wall and that light no longer reaches you (you're in shadow, hidden).
+	_player.is_lit = _lit_by_any()
 
 	# Auto-grab loot on touch (goblins hoover up everything).
 	for item in _loot:
@@ -202,6 +198,23 @@ func _input(event: InputEvent) -> void:
 func _emit_noise(pos: Vector2, loudness: float) -> void:
 	if _guard != null:
 		_guard.hear_noise(pos, loudness)
+
+## Is the goblin lit? Only by a burning lantern within reach AND with no wall
+## between — so a wall (or a smashed-out lantern) carves a safe pocket of dark.
+func _lit_by_any() -> bool:
+	for L in _lanterns:
+		if not L.lit:
+			continue
+		if _player.global_position.distance_to(L.pos) >= L.radius:
+			continue
+		if _clear(L.pos, _player.global_position):
+			return true
+	return false
+
+func _clear(from: Vector2, to: Vector2) -> bool:
+	var space := get_world_2d().direct_space_state
+	var query := PhysicsRayQueryParameters2D.create(from, to, 0b01)
+	return space.intersect_ray(query).is_empty()
 
 func _smash_near(pos: Vector2, radius: float, all_in_range: bool) -> void:
 	for L in _lanterns:
@@ -298,6 +311,8 @@ func _draw() -> void:
 			draw_circle(L.pos, 7.0, Color(1.0, 0.9, 0.5))
 		else:
 			draw_circle(L.pos, 7.0, Color(0.25, 0.25, 0.3))     # doused lantern
+	# Wall shadows cut the light pools — that's where it's safe to lurk.
+	_draw_shadows()
 	# Walls.
 	for r in _wall_rects:
 		draw_rect(r, Color(0.18, 0.18, 0.24))
@@ -341,6 +356,47 @@ func _draw() -> void:
 		var a: float = clampf(f.life / f.max, 0.0, 1.0)
 		var c: Color = f.color
 		_label(f.pos, f.text, Color(c.r, c.g, c.b, a))
+
+## Cast each wall's shadow away from each lit lantern, darkening the light pool
+## behind it. Greybox approximation: project the wall's two silhouette corners.
+func _draw_shadows() -> void:
+	for L in _lanterns:
+		if not L.lit:
+			continue
+		for r in _wall_rects:
+			_draw_wall_shadow(L.pos, L.radius, r)
+
+func _draw_wall_shadow(light: Vector2, radius: float, r: Rect2) -> void:
+	if r.has_point(light):
+		return
+	# Skip walls whose nearest point falls outside this lantern's reach.
+	var nearest := Vector2(clampf(light.x, r.position.x, r.end.x), clampf(light.y, r.position.y, r.end.y))
+	if light.distance_to(nearest) > radius:
+		return
+	var corners := [
+		r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y),
+	]
+	# Silhouette = the corners at the extreme angles as seen from the light.
+	var base: float = (corners[0] - light).angle()
+	var min_a := 0.0
+	var max_a := 0.0
+	var c_min: Vector2 = corners[0]
+	var c_max: Vector2 = corners[0]
+	for c in corners:
+		var a: float = wrapf((c - light).angle() - base, -PI, PI)
+		if a < min_a:
+			min_a = a
+			c_min = c
+		elif a > max_a:
+			max_a = a
+			c_max = c
+	var proj := radius * 2.2
+	var p_min: Vector2 = c_min + (c_min - light).normalized() * proj
+	var p_max: Vector2 = c_max + (c_max - light).normalized() * proj
+	draw_colored_polygon(
+		PackedVector2Array([c_min, c_max, p_max, p_min]),
+		Color(0.08, 0.08, 0.12, 0.85),
+	)
 
 func _label(pos: Vector2, text: String, color: Color) -> void:
 	if _font != null:
