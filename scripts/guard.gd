@@ -1,31 +1,66 @@
 extends CharacterBody2D
 ## A "tall folk" guard (greybox: a big, slow red lug with a vision cone).
 ##
-## Deliberately big and dim next to the little goblin. Patrols a loop, sees you
-## in its cone with clear line of sight (instant if you're lit), hears you if
-## you're noisy (so smashing things nearby will bring it running), and once
-## ALERTED it bellows "OI!" and gives chase. Touch you while alerted = nabbed.
+## Built as three clear layers so new guard types are cheap to add later:
+##   SENSES  — _can_see_player() (a facing cone with real line-of-sight) and
+##             hear_noise() (discrete noise events, muffled by walls).
+##   BRAIN   — _decide(): an explicit state machine over what the senses report.
+##               PATROL      walk the loop.
+##               INVESTIGATE heard something — go look where it came from.
+##               CHASE       actually saw you — run you down (touch = nabbed).
+##               SEARCH      lost sight — sweep the last-seen spot, then give up.
+##   BODY    — _act(): move toward the brain's target; move_and_slide().
+## A guard "type" is just a different STAT BLOCK (the vars below) — no new code.
+## Sound alone never reaches CHASE; only SEEING you does. Dawn-tension sharpens
+## the ears and quickens the step.
 
-const PATROL_SPEED := 46.0
-const CHASE_SPEED := 100.0
-const VIEW_DIST := 205.0
-const VIEW_DIST_LIT := 320.0
-const HALF_FOV := deg_to_rad(34.0)
+enum State { PATROL, INVESTIGATE, CHASE, SEARCH }
+
+# --- Stat block: this is what makes a guard "type". Override after .new(). ---
+var patrol_speed := 46.0
+var chase_speed := 100.0
+var view_dist := 205.0
+var view_dist_lit := 320.0
+var half_fov := deg_to_rad(34.0)
+var hear_range := 330.0          # how far a loudness-1.0 noise carries with no walls
+var hear_threshold := 0.12       # quieter than this (after falloff + walls) = unheard
+
+# --- Shared behaviour tuning (the same for every guard). ---
+const WALL_MUFFLE := 0.32        # a wall between guard and the sound dampens it to this
+const HEAR_GAIN := 0.9           # how fast a heard noise raises suspicion
+const INVESTIGATE_AT := 0.22     # suspicion above this (but below alert) = go and look
+const SEE_FILL := 1.7            # how fast seeing you (unlit) fills suspicion
+const SUSPICION_DECAY := 0.45    # how fast suspicion drains when it senses nothing
+const SEARCH_TIME := 3.5         # seconds spent poking around last-seen before giving up
+const INVESTIGATE_TIME := 4.0    # seconds chasing a heard-noise point before giving up
+const SCAN_RATE := 1.5           # how fast the gaze sweeps while standing and searching
 const CATCH_DIST := 24.0
 
 const GoblinScript := preload("res://scripts/player.gd")
 
 var waypoints: PackedVector2Array = PackedVector2Array()
 var facing := Vector2.RIGHT
-var alerted := false
+var state := State.PATROL
 var suspicion := 0.0
+var heard_pos := Vector2.ZERO      # where the last heard noise came from (look here)
+var last_seen := Vector2.ZERO      # where the goblin was last actually seen
+
+# Cheap flags the level reads for the HUD / markers.
+var alerted := false
+var investigating := false
+var searching := false
+
 var _wp := 0
 var _player: GoblinScript = null
-var _hearing := false
-var _was_alerted := false
+var _tension := 0.0
+var _seen := false
+var _search_t := 0.0
+var _investigate_t := 0.0
+var _caught := false
+var _cone_pts := PackedVector2Array()   # the drawn vision cone, clipped to walls
 
 signal caught_player
-signal spotted          # emitted the instant it becomes alerted (for an "OI!")
+signal spotted          # emitted the instant it freshly spots you (for an "OI!")
 
 func setup(points: PackedVector2Array, player: GoblinScript) -> void:
 	waypoints = points
@@ -45,40 +80,156 @@ func _ready() -> void:
 	cs.shape = rect
 	add_child(cs)
 
+func set_tension(t: float) -> void:
+	_tension = clampf(t, 0.0, 1.0)
+
 func _physics_process(delta: float) -> void:
-	var seen := _can_see_player()
-	var heard := _can_hear_player()
-	_hearing = heard
+	_seen = _can_see_player()
+	if _seen and _player != null:
+		last_seen = _player.global_position
+		heard_pos = _player.global_position
+	_decide(delta)
+	_act(delta)
 
-	if seen or heard:
-		if seen and _player != null and _player.is_lit:
-			suspicion = 1.0
+	if not _caught and state == State.CHASE and _player != null and global_position.distance_to(_player.global_position) < CATCH_DIST:
+		_caught = true
+		caught_player.emit()
+
+	if state != State.CHASE:
+		_compute_cone()
+	queue_redraw()
+
+# --- SENSES ---------------------------------------------------------------
+
+## Called (via the level) whenever the goblin makes a noise. Sound that survives
+## distance-falloff and wall-muffling raises suspicion and marks where to look —
+## but it caps below full alert, so noise alone never nabs you.
+func hear_noise(source: Vector2, loudness: float) -> void:
+	if _player == null or state == State.CHASE:
+		return
+	var dist := global_position.distance_to(source)
+	if dist >= hear_range:
+		return
+	var perceived := loudness * (1.0 - dist / hear_range)
+	if not _has_line_of_sight(source):
+		perceived *= WALL_MUFFLE
+	var thresh := hear_threshold * (1.0 - 0.45 * _tension)   # sharper ears near dawn
+	if perceived < thresh:
+		return
+	heard_pos = source
+	# Only ever RAISE suspicion — never claw back progress the sight system made.
+	suspicion = maxf(suspicion, minf(0.95, suspicion + perceived * HEAR_GAIN))
+
+func _can_see_player() -> bool:
+	if _player == null:
+		return false
+	var to := _player.global_position - global_position
+	var dist := to.length()
+	var max_dist := view_dist_lit if _player.is_lit else view_dist
+	if dist > max_dist:
+		return false
+	if absf(facing.angle_to(to)) > half_fov:
+		return false
+	return _has_line_of_sight(_player.global_position)
+
+func _has_line_of_sight(point: Vector2) -> bool:
+	var space := get_world_2d().direct_space_state
+	var query := PhysicsRayQueryParameters2D.create(global_position, point, 0b01)
+	return space.intersect_ray(query).is_empty()
+
+## Build the drawn cone as a fan of rays that STOP at the first wall, so the
+## visible cone matches the line-of-sight the guard actually has.
+func _compute_cone() -> void:
+	_cone_pts = PackedVector2Array()
+	_cone_pts.append(Vector2.ZERO)
+	var lit := _player != null and _player.is_lit
+	var view := view_dist_lit if lit else view_dist
+	var space := get_world_2d().direct_space_state
+	var steps := 18
+	var a0 := facing.angle() - half_fov
+	for i in range(steps + 1):
+		var a := a0 + (2.0 * half_fov) * (float(i) / float(steps))
+		var d := Vector2(cos(a), sin(a))
+		var q := PhysicsRayQueryParameters2D.create(global_position, global_position + d * view, 0b01)
+		var hit := space.intersect_ray(q)
+		if hit.is_empty():
+			_cone_pts.append(d * view)
 		else:
-			suspicion = minf(1.0, suspicion + 1.7 * delta)
+			_cone_pts.append(hit.position - global_position)
+
+# --- BRAIN ----------------------------------------------------------------
+
+func _decide(delta: float) -> void:
+	if _seen and _player != null:
+		suspicion = 1.0 if _player.is_lit else minf(1.0, suspicion + SEE_FILL * delta)
 	else:
-		suspicion = maxf(0.0, suspicion - 0.5 * delta)
+		suspicion = maxf(0.0, suspicion - SUSPICION_DECAY * delta)
 
-	if suspicion >= 1.0:
-		alerted = true
-	elif suspicion <= 0.0:
-		alerted = false
+	match state:
+		State.PATROL:
+			if _seen and suspicion >= 1.0:
+				_to_chase()
+			elif suspicion >= INVESTIGATE_AT:
+				state = State.INVESTIGATE
+				_investigate_t = INVESTIGATE_TIME
+		State.INVESTIGATE:
+			_investigate_t -= delta
+			if _seen and suspicion >= 1.0:
+				_to_chase()
+			elif suspicion < INVESTIGATE_AT * 0.4 or _investigate_t <= 0.0:
+				_to_patrol()
+		State.CHASE:
+			if not _seen and suspicion < 1.0:
+				state = State.SEARCH
+				_search_t = SEARCH_TIME
+		State.SEARCH:
+			if _seen and suspicion >= 1.0:
+				_to_chase()
+			else:
+				_search_t -= delta
+				if _search_t <= 0.0 or suspicion <= 0.0:
+					_to_patrol()
 
-	if alerted and not _was_alerted:
+	alerted = state == State.CHASE
+	investigating = state == State.INVESTIGATE
+	searching = state == State.SEARCH
+
+func _to_chase() -> void:
+	# Only shout "OI!" on a FRESH spot, not when re-acquiring mid-search.
+	if state == State.PATROL or state == State.INVESTIGATE:
 		spotted.emit()
-	if _was_alerted and not alerted:
-		_wp = _nearest_waypoint()
-	_was_alerted = alerted
+	state = State.CHASE
 
+func _to_patrol() -> void:
+	state = State.PATROL
+	_wp = _nearest_waypoint()
+
+# --- BODY -----------------------------------------------------------------
+
+func _act(delta: float) -> void:
+	var p_speed := patrol_speed * (1.0 + 0.5 * _tension)
 	var target := global_position
 	var speed := 0.0
-	if alerted and _player != null:
-		target = _player.global_position
-		speed = CHASE_SPEED
-	elif waypoints.size() > 0:
-		target = waypoints[_wp]
-		speed = PATROL_SPEED
-		if global_position.distance_to(target) < 6.0:
-			_wp = (_wp + 1) % waypoints.size()
+	match state:
+		State.CHASE:
+			target = _player.global_position if (_seen and _player != null) else last_seen
+			speed = chase_speed * (1.0 + 0.15 * _tension)
+		State.SEARCH:
+			target = last_seen
+			speed = chase_speed * 0.55
+			if global_position.distance_to(target) < 10.0:
+				speed = 0.0          # arrived — sweep the gaze around (below)
+		State.INVESTIGATE:
+			target = heard_pos
+			speed = p_speed * 1.5
+			if global_position.distance_to(target) < 8.0:
+				speed = 0.0
+		State.PATROL:
+			if waypoints.size() > 0:
+				target = waypoints[_wp]
+				speed = p_speed
+				if global_position.distance_to(target) < 6.0:
+					_wp = (_wp + 1) % waypoints.size()
 
 	var to_target := target - global_position
 	if to_target.length() > 1.0 and speed > 0.0:
@@ -87,37 +238,10 @@ func _physics_process(delta: float) -> void:
 		facing = facing.lerp(d, 0.16).normalized()
 	else:
 		velocity = Vector2.ZERO
+		# Standing at a noise/last-seen spot: sweep the cone to look around.
+		if state == State.SEARCH or state == State.INVESTIGATE:
+			facing = facing.rotated(SCAN_RATE * delta)
 	move_and_slide()
-
-	if alerted and _player != null and global_position.distance_to(_player.global_position) < CATCH_DIST:
-		caught_player.emit()
-
-	queue_redraw()
-
-func _can_see_player() -> bool:
-	if _player == null:
-		return false
-	var to := _player.global_position - global_position
-	var dist := to.length()
-	var max_dist := VIEW_DIST_LIT if _player.is_lit else VIEW_DIST
-	if dist > max_dist:
-		return false
-	if absf(facing.angle_to(to)) > HALF_FOV:
-		return false
-	return _has_line_of_sight(_player.global_position)
-
-func _can_hear_player() -> bool:
-	if _player == null:
-		return false
-	var r := _player.noise_radius()
-	if r < 8.0:
-		return false
-	return global_position.distance_to(_player.global_position) < r
-
-func _has_line_of_sight(point: Vector2) -> bool:
-	var space := get_world_2d().direct_space_state
-	var query := PhysicsRayQueryParameters2D.create(global_position, point, 0b01)
-	return space.intersect_ray(query).is_empty()
 
 func _nearest_waypoint() -> int:
 	var best := 0
@@ -129,32 +253,29 @@ func _nearest_waypoint() -> int:
 			best = i
 	return best
 
+# --- DRAW -----------------------------------------------------------------
+
 func _draw() -> void:
-	# Vision cone — hidden during a chase; longer when the player is lit.
-	if not alerted:
+	# Vision cone — hidden during a chase; clipped to walls (built in _compute_cone)
+	# so it never pokes through them and matches the guard's real line-of-sight.
+	if state != State.CHASE and _cone_pts.size() >= 3:
 		var lit := _player != null and _player.is_lit
 		var cone_col := Color(1, 0.85, 0.4, 0.16) if lit else Color(1, 1, 0.25, 0.06)
 		if suspicion > 0.02:
 			cone_col = Color(1, 0.55, 0.1, 0.13)
-		var view := VIEW_DIST_LIT if lit else VIEW_DIST
-		var pts := PackedVector2Array()
-		pts.append(Vector2.ZERO)
-		var steps := 18
-		var a0 := facing.angle() - HALF_FOV
-		for i in range(steps + 1):
-			var a := a0 + (2.0 * HALF_FOV) * (float(i) / float(steps))
-			pts.append(Vector2(cos(a), sin(a)) * view)
-		draw_colored_polygon(pts, cone_col)
+		draw_colored_polygon(_cone_pts, cone_col)
 
 	# Big tall-folk body (deliberately larger than the goblin).
 	draw_rect(Rect2(-16, -16, 32, 32), Color(0.8, 0.3, 0.3))
 	draw_rect(Rect2(-16, -16, 32, 32), Color(0.5, 0.15, 0.15), false, 2.0)
 	draw_line(Vector2.ZERO, facing * 22.0, Color.WHITE, 2.0)
 
-	# State pips.
-	if alerted:
-		draw_circle(Vector2(0, -26), 5.0, Color(1, 0.15, 0.15))     # chasing
+	# State pip: red chase, sky-blue search, orange investigate, amber niggle.
+	if state == State.CHASE:
+		draw_circle(Vector2(0, -26), 5.0, Color(1, 0.15, 0.15))
+	elif state == State.SEARCH:
+		draw_circle(Vector2(0, -26), 4.0, Color(0.4, 0.8, 1.0))
+	elif state == State.INVESTIGATE:
+		draw_circle(Vector2(0, -26), 4.0, Color(1, 0.55, 0.1))
 	elif suspicion > 0.05:
-		draw_circle(Vector2(0, -26), 4.0, Color(1, 0.7, 0.1))       # suspicious
-	if _hearing and not alerted:
-		draw_circle(Vector2(14, -26), 3.5, Color(0.4, 0.8, 1.0))    # heard you
+		draw_circle(Vector2(0, -26), 4.0, Color(1, 0.7, 0.1))
