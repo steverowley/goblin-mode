@@ -58,7 +58,10 @@ func _build() -> void:
 	if GameState.upkeep_note != "":
 		_lbl(GameState.upkeep_note, Vector2(36, 88), 13, Color(1.0, 0.75, 0.4))
 	if GameState.night_event != "":
-		_lbl(GameState.night_event, Vector2(36, 106), 14, Color(0.55, 0.9, 1.0))
+		if GameState.just_collapsed:
+			_lbl(GameState.night_event, Vector2(36, 105), 15, Color(1.0, 0.45, 0.35))
+		else:
+			_lbl(GameState.night_event, Vector2(36, 106), 14, Color(0.55, 0.9, 1.0))
 
 	_build_roster()
 	_build_actions()

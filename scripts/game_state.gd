@@ -39,6 +39,7 @@ const MUTATION_CHANCE := 14      # % chance a bred pup mutates one stat to a wil
 ## cap a goblin deserts. (The full run-end collapse waits for meta-progression.)
 const UPKEEP_PER_GOBLIN := 2
 const UNREST_MAX := 5
+const COLLAPSE_NIGHTS := 3       # consecutive nights at MAX unrest before the warren collapses (run ends)
 
 var schema_version := SCHEMA_VERSION
 var roster: Array = []              # every goblin ever (alive flag marks the living), each a Dictionary
@@ -56,6 +57,8 @@ var unrest := 0                     # 0..UNREST_MAX; rises when upkeep goes unpa
 var night_event := ""               # the random thing that happened in the warren overnight
 var upkeep_note := ""               # last night's upkeep summary (shown in the Den)
 var legacy := 0                     # bloodline renown (meta-progression); recruits scale with it
+var collapse_pressure := 0         # consecutive nights at MAX unrest
+var just_collapsed := false        # set the morning a warren falls and rises anew (Bite 3)
 
 var _next_id := 0                   # hands out stable unique goblin ids
 var _pup_n := 0                     # rolls through the pup-name pool
@@ -90,6 +93,8 @@ func new_game() -> void:
 	night_event = ""
 	upkeep_note = ""
 	legacy = 0
+	collapse_pressure = 0
+	just_collapsed = false
 
 func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
 	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
@@ -268,6 +273,7 @@ func resolve_raid(result: Dictionary) -> void:
 ## dead, a free runt wanders in.
 func advance_night() -> void:
 	night += 1
+	just_collapsed = false
 	# Pups grow up.
 	for g in roster:
 		if g.alive and g.stage == STAGE_PUP:
@@ -279,10 +285,16 @@ func advance_night() -> void:
 	if have < cost:
 		unrest = mini(UNREST_MAX, unrest + 1)
 		upkeep_note = "Upkeep %d shinies — couldn't pay it! Unrest rising." % cost
+		collapse_pressure += 1
 	else:
 		if unrest > 0:
 			unrest = maxi(0, unrest - 1)
 		upkeep_note = "Upkeep paid: -%d shinies." % cost
+		collapse_pressure = 0
+	# Too many nights unable to pay upkeep -> the warren collapses (run-end; meta carries on).
+	if collapse_pressure >= COLLAPSE_NIGHTS:
+		start_new_run()
+		return
 	# One thing happens overnight: a desertion if the warren's boiling over, else a
 	# random warren event. Mutually exclusive — you never lose two goblins in a night.
 	if unrest >= UNREST_MAX and living().size() > 1:
@@ -292,6 +304,32 @@ func advance_night() -> void:
 	# Anti-softlock backstop: never fully wiped out.
 	if living().is_empty():
 		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
+
+## The warren has fallen (sustained unrest). A roguelike run-end: the LEGACY carries
+## forward (+ a bump for the fallen warren's renown) and the wall of the dead is
+## kept, but the warren itself resets — a fresh, legacy-boosted gang rises to try
+## again. (The full run-end collapse the user chose; needs no extra "keep" plumbing
+## because GameState already separates legacy/fallen from the warren state.)
+func start_new_run() -> void:
+	legacy += 2                      # the fallen warren's renown carries forward
+	_next_id = 0
+	_pup_n = 0
+	roster = [
+		_make_goblin("Snik", STAGE_ADULT, _recruit_stats()),
+		_make_goblin("Grubba", STAGE_ADULT, _recruit_stats()),
+		_make_goblin("Wort", STAGE_ADULT, _recruit_stats()),
+	]
+	resources = {"shinies": 0, "food": START_FOOD}
+	huts = START_HUTS
+	night = 1
+	unrest = 0
+	collapse_pressure = 0
+	sent_id = -1
+	loadout = ""
+	last_event = ""
+	upkeep_note = ""
+	just_collapsed = true
+	night_event = "Warren COLLAPSED — risen anew. Legacy %d carries on." % legacy
 
 ## One random overnight happening, applied + described (shown in the Den next
 ## morning). Greybox flavour with light economy nudges.
