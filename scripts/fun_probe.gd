@@ -22,6 +22,10 @@ const DAWN_SECONDS := 80.0
 const DAWN_RAMP := 26.0          # final seconds where dawn-tension ramps the guards up
 const GRAB_R := 20.0
 const SMASH_R := 36.0
+const MELEE_R := 38.0            # reach of a sword swipe (Bite 2.5)
+const STAB_CD := 0.3             # gap between swipes (quick — guard swings are uninterruptible, so no flinch-lock)
+const SWIPE_HALF := deg_to_rad(20.0)   # half-angle of the goblin's narrow stab
+const SWIPE_TIME := 0.14         # how long the stab thrust is drawn
 const PLAYER_START := Vector2(80, 470)
 const EXIT_POS := Vector2(80, 80)
 const EXIT_R := 34.0
@@ -68,6 +72,9 @@ const IFRAME_TIME := 1.2             # invulnerable window after wriggling free 
 var _hp := 1                         # sent goblin's Health = grabs it can take before it's nabbed
 var _hp_max := 1
 var _iframe_t := 0.0                 # remaining scramble i-frames
+var _stab_cd := 0.0                  # cooldown between sword swipes
+var _swipe_t := 0.0                  # swipe-arc draw timer
+var _swipe_dir := Vector2.RIGHT
 var _noise_mult := 1.0               # Sneak stat: <1 = quieter to guards (1.0 = neutral/standalone)
 
 var _player: GoblinScript
@@ -188,6 +195,7 @@ func _build_actors() -> void:
 	# Guard A — a big slow "brute" looping the central room (R3), the chokepoint.
 	var brute := GuardScript.new()
 	brute.nav = self           # pathfinds through doorways via the level's A* grid
+	brute.hp = 4               # the big brute soaks more hits in an open fight
 	add_child(brute)
 	brute.setup(PackedVector2Array([
 		Vector2(400, 100), Vector2(560, 100), Vector2(560, 460), Vector2(400, 460),
@@ -202,6 +210,7 @@ func _build_actors() -> void:
 	scout.chase_speed = 122.0
 	scout.view_dist = 235.0
 	scout.body_color = Color(0.85, 0.5, 0.2)   # orange — tells it apart from the brute
+	scout.hp = 2               # the fast scout is fragile
 	add_child(scout)
 	scout.setup(PackedVector2Array([
 		Vector2(760, 100), Vector2(900, 130), Vector2(900, 450), Vector2(720, 440),
@@ -274,6 +283,8 @@ func _physics_process(delta: float) -> void:
 	if _state != "play":
 		return
 	_iframe_t = maxf(0.0, _iframe_t - delta)
+	_stab_cd = maxf(0.0, _stab_cd - delta)
+	_swipe_t = maxf(0.0, _swipe_t - delta)
 
 	# Lit by any still-burning lantern with a CLEAR line to the goblin — duck
 	# behind a wall and that light no longer reaches you (you're in shadow, hidden).
@@ -330,9 +341,10 @@ func _process(delta: float) -> void:
 	if _tint != null:
 		_tint.visible = (_state == "play" and _player.frenzy)
 	if _player != null:
-		# Flicker while scrambling free — but snap back to opaque the moment the raid
-		# ends, since _iframe_t stops ticking once _state leaves "play".
-		_player.modulate.a = 0.45 if (_iframe_t > 0.0 and _state == "play") else 1.0
+		# Flicker while scrambling free OR mid dodge-roll — but snap opaque the moment
+		# the raid ends, since those timers stop ticking once _state leaves "play".
+		var inv: bool = (_iframe_t > 0.0 or _player.dashing) and _state == "play"
+		_player.modulate.a = 0.45 if inv else 1.0
 	_update_info()
 	queue_redraw()
 	if _overlay != null:
@@ -341,6 +353,15 @@ func _process(delta: float) -> void:
 		_fog.queue_redraw()
 
 func _input(event: InputEvent) -> void:
+	# Strike (LMB) — a melee stealth takedown on an unaware guard.
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if _state == "play":
+			_try_takedown()
+		return
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+		if _state == "play":
+			_player.start_dash()
+		return
 	if not (event is InputEventKey and event.pressed):
 		return
 	# Embedded under the M2 spine and the raid is over: any key slinks home.
@@ -547,11 +568,46 @@ func _deploy_stink() -> void:
 	_stink_t = STINK_TIME
 	_spawn_text(_stink_pos, "*PHWOAR* stink bomb!", Color(0.6, 1.0, 0.3))
 
+## A quick STAB (LMB): a narrow thrust where you're aiming. An UNAWARE guard is a
+## silent takedown; an ALERTED one takes a chip of HP (it swings back). Precise —
+## aim it at the guard.
+func _try_takedown() -> void:
+	if _stab_cd > 0.0:
+		return
+	_stab_cd = STAB_CD
+	var f: Vector2 = _player.facing
+	_swipe_t = SWIPE_TIME
+	_swipe_dir = f
+	var hit_any := false
+	for g in _guards:
+		if g.downed:
+			continue
+		var v: Vector2 = g.global_position - _player.global_position
+		var d := v.length()
+		if d > MELEE_R:
+			continue
+		if d > 8.0 and absf(f.angle_to(v)) > SWIPE_HALF:
+			continue                 # outside the swipe arc
+		hit_any = true
+		if g.is_unaware():
+			# Genuinely off-guard -> a silent one-shot takedown.
+			g.take_down()
+			_spawn_text(g.global_position, "*shhk*", Color(0.7, 1.0, 0.4))
+		else:
+			# Aware (chasing/searching/suspicious) -> chip its HP; it rounds on you.
+			if g.take_hit(1):
+				_spawn_text(g.global_position, "DOWNED!", Color(1.0, 0.5, 0.3))
+			else:
+				_spawn_text(g.global_position, "*hit!*", Color(1.0, 0.7, 0.4))
+	if hit_any:
+		_emit_noise(_player.global_position, 0.5)   # a scuffle — nearby guards may come looking
+		_player.add_chaos(0.06)
+
 func _on_caught(g) -> void:
 	if _state != "play":
 		return
-	if _iframe_t > 0.0:
-		g.shake_off()               # already scrambling — re-arm this guard so its catch can't latch defanged
+	if _iframe_t > 0.0 or _player.dashing:
+		g.shake_off()               # scrambling or mid dodge-roll — re-arm this guard, no hit lands
 		return
 	_hp -= 1
 	if _hp <= 0:
@@ -602,7 +658,7 @@ func _show_banner(text: String) -> void:
 
 func _update_info() -> void:
 	var lines := PackedStringArray()
-	lines.append("WASD move   Shift sneak   E smash   SPACE Goblin Mode   R restart")
+	lines.append("WASD move   Mouse aim   LMB stab   RMB dash   Shift sneak   E smash   SPACE Goblin Mode   R restart")
 	var tag := ""
 	if _player.frenzy:
 		tag = "  *** GOBLIN MODE! ***"
@@ -700,6 +756,14 @@ class _OverlayDraw extends Node2D:
 			probe._draw_overlay(self)
 
 func _draw_overlay(cv: CanvasItem) -> void:
+	# Goblin STAB (Bite 2.5) — a quick pointed thrust where you're aiming.
+	if _swipe_t > 0.0 and _player != null:
+		var sd: Vector2 = _swipe_dir
+		var salpha := clampf(_swipe_t / SWIPE_TIME, 0.0, 1.0)
+		var tip := _player.global_position + sd * MELEE_R
+		var base := _player.global_position + sd * 6.0
+		var perp := Vector2(-sd.y, sd.x) * 5.0
+		cv.draw_colored_polygon(PackedVector2Array([base - perp, base + perp, tip]), Color(0.95, 0.98, 1.0, 0.95 * salpha))
 	# Stink cloud (issue #8) — a green pall, kept bright above the fog, that lures guards in.
 	if _stink_t > 0.0:
 		var sa: float = clampf(_stink_t / STINK_TIME, 0.0, 1.0)
