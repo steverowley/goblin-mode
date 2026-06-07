@@ -32,12 +32,12 @@ const WALL_MUFFLE := 0.32        # a wall between guard and the sound dampens it
 const HEAR_GAIN := 0.9           # how fast a heard noise raises suspicion
 const INVESTIGATE_AT := 0.22     # suspicion above this (but below alert) = go and look
 const SEE_FILL := 1.7            # how fast seeing you (unlit) fills suspicion
-const SUSPICION_DECAY := 0.45    # how fast suspicion drains when it senses nothing
-const SEARCH_TIME := 3.5         # seconds spent poking around last-seen before giving up
+const SUSPICION_DECAY := 0.3     # how fast suspicion drains when it senses nothing (slow — stays edgy)
+const SEARCH_TIME := 7.0         # seconds spent prowling around last-seen before giving up
 const INVESTIGATE_TIME := 4.0    # seconds chasing a heard-noise point before giving up
 const SCAN_RATE := 1.5           # how fast the gaze sweeps while standing and searching
 const STRIKE_R := 30.0           # reach of a guard's telegraphed melee swing
-const WINDUP_TIME := 0.35        # the tell — it rears back this long before the blow lands (dodge it!)
+const WINDUP_TIME := 0.28        # the tell — it rears back this long before the blow lands (dodge it!)
 const STRIKE_CD := 0.4           # minimum gap between swings (aggressive)
 const SWING_HALF := deg_to_rad(55.0)   # half-angle of a guard's wide swing arc (dodge out of it sideways)
 
@@ -67,6 +67,8 @@ var _player: GoblinScript = null
 var _tension := 0.0
 var _seen := false
 var _search_t := 0.0
+var _search_pick_t := 0.0
+var _search_target := Vector2.ZERO
 var _investigate_t := 0.0
 var _caught := false
 var _cone_pts := PackedVector2Array()   # the drawn vision cone, clipped to walls
@@ -271,12 +273,20 @@ func _decide(delta: float) -> void:
 			if not _seen and suspicion < 1.0:
 				state = State.SEARCH
 				_search_t = SEARCH_TIME
+				_search_target = last_seen
+				_search_pick_t = 1.0
 		State.SEARCH:
 			if _seen and suspicion >= 1.0:
 				_to_chase()
 			else:
 				_search_t -= delta
-				if _search_t <= 0.0 or suspicion <= 0.0:
+				_search_pick_t -= delta
+				# Actively prowl around the last-seen spot — don't give up just
+				# because suspicion faded.
+				if _search_pick_t <= 0.0 or global_position.distance_to(_search_target) < 16.0:
+					_search_target = last_seen + Vector2(randf_range(-90.0, 90.0), randf_range(-90.0, 90.0))
+					_search_pick_t = 1.3
+				if _search_t <= 0.0:
 					_to_patrol()
 
 	alerted = state == State.CHASE
@@ -308,10 +318,10 @@ func _act(delta: float) -> void:
 			target = _player.global_position if (_seen and _player != null) else last_seen
 			speed = chase_speed * (1.0 + 0.15 * _tension)
 		State.SEARCH:
-			target = last_seen
-			speed = chase_speed * 0.55
-			if global_position.distance_to(target) < 10.0:
-				speed = 0.0          # arrived — sweep the gaze around (below)
+			target = _search_target
+			speed = chase_speed * 0.6
+			if global_position.distance_to(target) < 12.0:
+				speed = 0.0          # at a spot — sweep the gaze, then prowl to the next
 		State.INVESTIGATE:
 			target = heard_pos
 			speed = p_speed * 1.5
