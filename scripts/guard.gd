@@ -124,15 +124,28 @@ func take_down() -> void:
 	_cone_pts = PackedVector2Array()
 	queue_redraw()
 
-## Open brawl: the goblin's swipe chips an ALERTED guard's health. At 0 it goes
-## down. Its swing is NOT interrupted by a hit — the guard commits, so you must
-## dodge or eat it.
+## Open brawl: a stab on an AWARE guard chips its health (an unaware one is a
+## one-shot takedown instead — see is_unaware). At 0 HP it goes down. The hit does
+## NOT interrupt its swing (it commits, so you must dodge), and it rounds on you —
+## so you can't cheese a chase into a free kill.
 func take_hit(dmg: int) -> bool:
 	hp -= dmg
 	if hp <= 0:
 		take_down()
 		return true
+	if _player != null:
+		last_seen = _player.global_position
+		heard_pos = _player.global_position
+	suspicion = 1.0
+	state = State.CHASE
+	alerted = true
 	return false
+
+## Genuinely off-guard — not chasing, not searching for you after losing sight,
+## and not half-alerted — so a stab one-shots it (a stealth takedown). After a
+## chase a guard SEARCHES, so juking it behind a wall no longer earns a free kill.
+func is_unaware() -> bool:
+	return not downed and state != State.CHASE and state != State.SEARCH and suspicion < 0.85
 
 ## Telegraphed melee strike (open brawl). In a chase, once it's in reach it REARS
 ## BACK (a visible tell) then swings — dodge by getting out of reach before it lands.

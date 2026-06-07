@@ -589,14 +589,16 @@ func _try_takedown() -> void:
 		if d > 8.0 and absf(f.angle_to(v)) > SWIPE_HALF:
 			continue                 # outside the swipe arc
 		hit_any = true
-		if g.alerted:
+		if g.is_unaware():
+			# Genuinely off-guard -> a silent one-shot takedown.
+			g.take_down()
+			_spawn_text(g.global_position, "*shhk*", Color(0.7, 1.0, 0.4))
+		else:
+			# Aware (chasing/searching/suspicious) -> chip its HP; it rounds on you.
 			if g.take_hit(1):
 				_spawn_text(g.global_position, "DOWNED!", Color(1.0, 0.5, 0.3))
 			else:
 				_spawn_text(g.global_position, "*hit!*", Color(1.0, 0.7, 0.4))
-		else:
-			g.take_down()
-			_spawn_text(g.global_position, "*shhk*", Color(0.7, 1.0, 0.4))
 	if hit_any:
 		_emit_noise(_player.global_position, 0.5)   # a scuffle — nearby guards may come looking
 		_player.add_chaos(0.06)
