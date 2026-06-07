@@ -32,6 +32,12 @@ const RAID_FOOD := 5           # grub nicked from a farm on a successful raid (r
 const STAT_MIN := 1
 const STAT_MAX := 4
 
+## Warren upkeep + nightly events (#12 economy + Bite-3 stakes groundwork). Each
+## night gold pays upkeep per living goblin; a shortfall breeds UNREST, and at the
+## cap a goblin deserts. (The full run-end collapse waits for meta-progression.)
+const UPKEEP_PER_GOBLIN := 2
+const UNREST_MAX := 5
+
 var schema_version := SCHEMA_VERSION
 var roster: Array = []              # every goblin ever (alive flag marks the living), each a Dictionary
 var resources: Dictionary = {}      # {"shinies": int, "food": int}
@@ -43,7 +49,10 @@ var night := 1                      # which night the warren is on
 var sent_id := -1                   # id of the goblin sent on tonight's raid (-1 = none chosen)
 var fallen: Array = []              # the wall of the dead: [{name, feat}]
 var last_raid: Dictionary = {}      # summary of the most recent raid's outcome
-var last_event := ""                # short "what just happened" line the Den shows
+var last_event := ""                # short "what just happened" line (raid/forage outcome)
+var unrest := 0                     # 0..UNREST_MAX; rises when upkeep goes unpaid
+var night_event := ""               # the random thing that happened in the warren overnight
+var upkeep_note := ""               # last night's upkeep summary (shown in the Den)
 
 var _next_id := 0                   # hands out stable unique goblin ids
 var _pup_n := 0                     # rolls through the pup-name pool
@@ -74,6 +83,9 @@ func new_game() -> void:
 	fallen = []
 	last_raid = {}
 	last_event = ""
+	unrest = 0
+	night_event = ""
+	upkeep_note = ""
 
 func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
 	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
@@ -190,11 +202,76 @@ func resolve_raid(result: Dictionary) -> void:
 ## dead, a free runt wanders in.
 func advance_night() -> void:
 	night += 1
+	# Pups grow up.
 	for g in roster:
 		if g.alive and g.stage == STAGE_PUP:
 			g.stage = STAGE_ADULT
+	# Upkeep: the warren eats gold; a shortfall breeds unrest, paying it calms things.
+	var cost := living().size() * UPKEEP_PER_GOBLIN
+	var have := int(resources.get("shinies", 0))
+	resources.shinies = maxi(0, have - cost)
+	if have < cost:
+		unrest = mini(UNREST_MAX, unrest + 1)
+		upkeep_note = "Upkeep %d shinies — couldn't pay it! Unrest rising." % cost
+	else:
+		if unrest > 0:
+			unrest = maxi(0, unrest - 1)
+		upkeep_note = "Upkeep paid: -%d shinies." % cost
+	# One thing happens overnight: a desertion if the warren's boiling over, else a
+	# random warren event. Mutually exclusive — you never lose two goblins in a night.
+	if unrest >= UNREST_MAX and living().size() > 1:
+		night_event = _desert()
+	else:
+		night_event = _roll_night_event()
+	# Anti-softlock backstop: never fully wiped out.
 	if living().is_empty():
-		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _random_stats()))   # a free runt wanders in
+		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _random_stats()))
+
+## One random overnight happening, applied + described (shown in the Den next
+## morning). Greybox flavour with light economy nudges.
+func _roll_night_event() -> String:
+	var r := randi() % 100
+	if r < 14:
+		var n := randi_range(2, 5)
+		resources.shinies += n
+		return "A goblin dug up an old stash — +%d shinies." % n
+	elif r < 28:
+		var n := randi_range(2, 4)
+		resources.food += n
+		return "A good night's foraging out back — +%d food." % n
+	elif r < 40:
+		if living().size() < huts:
+			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _random_stats()))
+			return "A stray goblin wandered in an' stayed."
+		return "A stray sniffed about but found no free hole."
+	elif r < 56:
+		var n := mini(int(resources.get("food", 0)), randi_range(1, 3))
+		resources.food -= n
+		return ("Rats got into the stores — -%d food." % n) if n > 0 else "Rats nosed about but found nowt to nick."
+	elif r < 70:
+		unrest = mini(UNREST_MAX, unrest + 1)
+		return "A scrap broke out in the pit — the warren's restless."
+	elif r < 78:
+		var a := living()
+		if a.size() > 1:
+			var g: Dictionary = a[randi() % a.size()]
+			g.alive = false
+			fallen.append({"name": g.name, "feat": "slunk off into the night"})
+			return "%s slunk off in the night — gone." % g.name
+		return "A restless night, but the gang held."
+	return "A quiet night in the warren."
+
+## Unrest at the cap: a fed-up goblin deserts (recoverable — breed more). Never the
+## last one (anti-softlock). Returns its own short headline for the Den.
+func _desert() -> String:
+	var a := living()
+	if a.size() <= 1:
+		return night_event
+	var g: Dictionary = a[randi() % a.size()]
+	g.alive = false
+	fallen.append({"name": g.name, "feat": "deserted in the uproar"})
+	unrest = maxi(0, unrest - 2)
+	return "%s had enough of the squalor — DESERTED!" % g.name
 
 func _feat_for(g: Dictionary) -> String:
 	if int(g.get("best", 0)) > 0:
