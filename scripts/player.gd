@@ -53,6 +53,12 @@ func _physics_process(delta: float) -> void:
 		dir.x += 1.0
 	dir = dir.normalized()
 
+	# Face / aim toward the mouse (twin-stick): movement is WASD, but you LOOK where
+	# the cursor is — so the vision cone follows the mouse (peek without moving).
+	var to_mouse := get_global_mouse_position() - global_position
+	if to_mouse.length() > 1.0:
+		facing = to_mouse.normalized()
+
 	if frenzy:
 		frenzy_timer -= delta
 		if frenzy_timer <= 0.0:
@@ -77,7 +83,6 @@ func _physics_process(delta: float) -> void:
 	else:
 		var floor_n := clampf(weight * 0.025 / carry, 0.0, 0.5)
 		if dir != Vector2.ZERO:
-			facing = dir
 			var gain := (0.10 if is_sneaking else 0.45)
 			noise = clampf(noise + gain * delta, 0.0, 1.0)
 		else:

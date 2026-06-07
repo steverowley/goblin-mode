@@ -22,6 +22,7 @@ const DAWN_SECONDS := 80.0
 const DAWN_RAMP := 26.0          # final seconds where dawn-tension ramps the guards up
 const GRAB_R := 20.0
 const SMASH_R := 36.0
+const MELEE_R := 34.0            # reach of a stealth takedown (Bite 2.5)
 const PLAYER_START := Vector2(80, 470)
 const EXIT_POS := Vector2(80, 80)
 const EXIT_R := 34.0
@@ -341,6 +342,11 @@ func _process(delta: float) -> void:
 		_fog.queue_redraw()
 
 func _input(event: InputEvent) -> void:
+	# Strike (LMB) — a melee stealth takedown on an unaware guard.
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if _state == "play":
+			_try_takedown()
+		return
 	if not (event is InputEventKey and event.pressed):
 		return
 	# Embedded under the M2 spine and the raid is over: any key slinks home.
@@ -547,6 +553,28 @@ func _deploy_stink() -> void:
 	_stink_t = STINK_TIME
 	_spawn_text(_stink_pos, "*PHWOAR* stink bomb!", Color(0.6, 1.0, 0.3))
 
+## A melee stealth takedown (Bite 2.5): drop the nearest guard you're aiming at
+## that ISN'T already chasing you. A guard that's onto you (alerted) shrugs it off
+## — that's the open-brawl rung (v2). Quiet: no alarm raised.
+func _try_takedown() -> void:
+	var best = null
+	var best_d := MELEE_R
+	var f: Vector2 = _player.facing
+	for g in _guards:
+		if g.downed or g.alerted:
+			continue
+		var v: Vector2 = g.global_position - _player.global_position
+		var d := v.length()
+		if d <= best_d and (d < 8.0 or f.dot(v.normalized()) > 0.25):
+			best = g
+			best_d = d
+	if best != null:
+		best.take_down()
+		_spawn_text(best.global_position, "*shhk* takedown!", Color(0.7, 1.0, 0.4))
+		_player.add_chaos(0.08)
+	else:
+		_spawn_text(_player.global_position, "*swipe*", Color(0.8, 0.8, 0.8))
+
 func _on_caught(g) -> void:
 	if _state != "play":
 		return
@@ -602,7 +630,7 @@ func _show_banner(text: String) -> void:
 
 func _update_info() -> void:
 	var lines := PackedStringArray()
-	lines.append("WASD move   Shift sneak   E smash   SPACE Goblin Mode   R restart")
+	lines.append("WASD move   Mouse aim   LMB takedown   Shift sneak   E smash   SPACE Goblin Mode   R restart")
 	var tag := ""
 	if _player.frenzy:
 		tag = "  *** GOBLIN MODE! ***"

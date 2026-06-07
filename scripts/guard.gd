@@ -50,6 +50,7 @@ var last_seen := Vector2.ZERO      # where the goblin was last actually seen
 var alerted := false
 var investigating := false
 var searching := false
+var downed := false              # stealth-taken-down — inert for the rest of the raid
 
 var _wp := 0
 var _player: GoblinScript = null
@@ -101,7 +102,20 @@ func shake_off() -> void:
 	_search_t = SEARCH_TIME
 	suspicion = 0.9
 
+## Stealth takedown (Bite 2.5): the goblin dropped this guard. It's out of the
+## raid — inert, blind, and harmless.
+func take_down() -> void:
+	downed = true
+	velocity = Vector2.ZERO
+	alerted = false
+	investigating = false
+	searching = false
+	_cone_pts = PackedVector2Array()
+	queue_redraw()
+
 func _physics_process(delta: float) -> void:
+	if downed:
+		return
 	_seen = _can_see_player()
 	if _seen and _player != null:
 		last_seen = _player.global_position
@@ -123,7 +137,7 @@ func _physics_process(delta: float) -> void:
 ## distance-falloff and wall-muffling raises suspicion and marks where to look —
 ## but it caps below full alert, so noise alone never nabs you.
 func hear_noise(source: Vector2, loudness: float) -> void:
-	if _player == null or state == State.CHASE:
+	if _player == null or state == State.CHASE or downed:
 		return
 	var dist := global_position.distance_to(source)
 	if dist >= hear_range:
@@ -139,7 +153,7 @@ func hear_noise(source: Vector2, loudness: float) -> void:
 	suspicion = maxf(suspicion, minf(0.95, suspicion + perceived * HEAR_GAIN))
 
 func _can_see_player() -> bool:
-	if _player == null:
+	if _player == null or downed:
 		return false
 	var to := _player.global_position - global_position
 	var dist := to.length()
@@ -295,6 +309,13 @@ func _nearest_waypoint() -> int:
 # --- DRAW -----------------------------------------------------------------
 
 func _draw() -> void:
+	if downed:
+		draw_rect(Rect2(-16, -7, 32, 14), body_color.darkened(0.55))   # sprawled out cold
+		draw_line(Vector2(-7, -3), Vector2(-1, 3), Color(0.1, 0.1, 0.1), 1.5)   # X_X eyes
+		draw_line(Vector2(-7, 3), Vector2(-1, -3), Color(0.1, 0.1, 0.1), 1.5)
+		draw_line(Vector2(1, -3), Vector2(7, 3), Color(0.1, 0.1, 0.1), 1.5)
+		draw_line(Vector2(1, 3), Vector2(7, -3), Color(0.1, 0.1, 0.1), 1.5)
+		return
 	# Vision cone — hidden during a chase; clipped to walls (built in _compute_cone)
 	# so it never pokes through them and matches the guard's real line-of-sight.
 	if state != State.CHASE and _cone_pts.size() >= 3:
