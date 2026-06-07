@@ -45,23 +45,25 @@ func _build() -> void:
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg)
 
-	_lbl("THE WARREN — Night %d" % GameState.night, Vector2(36, 16), 22)
+	_lbl("THE WARREN — Night %d" % GameState.night, Vector2(36, 14), 22)
 	_lbl("Food %d    Shinies %d    Holes %d/%d" % [
 		int(GameState.resources.get("food", 0)), int(GameState.resources.get("shinies", 0)),
 		GameState.living().size(), GameState.huts,
-	], Vector2(36, 54), 15, Color(1, 0.9, 0.6))
+	], Vector2(36, 50), 15, Color(1, 0.9, 0.6))
+	if GameState.last_event != "":
+		_lbl(GameState.last_event, Vector2(36, 74), 13, Color(0.75, 1.0, 0.7))
 
 	_build_roster()
 	_build_actions()
 
 func _build_roster() -> void:
-	_lbl("Send a goblin tonight (click an adult):", Vector2(36, 90), 14)
+	_lbl("Send a goblin tonight (click an adult):", Vector2(36, 96), 14)
 	# Adults first (they're the pickable ones), then pups — so a sendable goblin is
 	# always near the top, and the list is capped so it never runs off a big warren.
 	var rows: Array = GameState.adults()
 	rows.append_array(GameState.pups())
 
-	var ry := 114
+	var ry := 120
 	var max_visible := 8
 	for i in range(rows.size()):
 		if i == max_visible - 1 and rows.size() > max_visible:

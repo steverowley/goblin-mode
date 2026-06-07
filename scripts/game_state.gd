@@ -24,7 +24,7 @@ const START_HUTS := 4          # mud-holes = population cap (pups included)
 const START_FOOD := 6
 const BREED_FOOD := 4          # food to breed one pup
 const DIG_SHINIES := 8         # shinies to dig a new mud-hole (+1 capacity)
-const FORAGE_FOOD := 3         # food a safe night's foraging brings in
+const RAID_FOOD := 5           # grub nicked from a farm on a successful raid (raids are the larder)
 
 var schema_version := SCHEMA_VERSION
 var roster: Array = []              # every goblin ever (alive flag marks the living), each a Dictionary
@@ -37,6 +37,7 @@ var night := 1                      # which night the warren is on
 var sent_id := -1                   # id of the goblin sent on tonight's raid (-1 = none chosen)
 var fallen: Array = []              # the wall of the dead: [{name, feat}]
 var last_raid: Dictionary = {}      # summary of the most recent raid's outcome
+var last_event := ""                # short "what just happened" line the Den shows
 
 var _next_id := 0                   # hands out stable unique goblin ids
 var _pup_n := 0                     # rolls through the pup-name pool
@@ -62,6 +63,7 @@ func new_game() -> void:
 	sent_id = -1
 	fallen = []
 	last_raid = {}
+	last_event = ""
 
 func _make_goblin(gname: String, stage: String) -> Dictionary:
 	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0}
@@ -127,8 +129,22 @@ func clear_sent() -> void:
 ## (pups grow), but there's no raid and no risk. The always-available
 ## anti-softlock action (decision K).
 func forage_night() -> void:
-	resources.food += FORAGE_FOOD
+	var got := _forage_roll()
+	resources.food += got
+	last_event = ("Foraged: +%d food." % got) if got > 0 else "Foraged: slim pickings — found nowt."
 	advance_night()
+
+## Luck-based and meagre — most food should come from RAIDS, not foraging. Usually
+## slim, occasionally a decent find.
+func _forage_roll() -> int:
+	var r := randi() % 100
+	if r < 35:
+		return 0
+	elif r < 80:
+		return 1
+	elif r < 95:
+		return 2
+	return 3
 
 ## Apply a raid's outcome to the sent goblin, then tick the night over. An ESCAPE
 ## ("won") banks the loot and the goblin lives; any LOSS (caught or caught by
@@ -136,13 +152,19 @@ func forage_night() -> void:
 ## its name + best feat go on the wall of the dead.
 func resolve_raid(result: Dictionary) -> void:
 	var g := sent_goblin()
+	var who: String = String(g.name) if not g.is_empty() else "The goblin"
 	if String(result.get("outcome", "lost")) == "won":
-		resources.shinies += int(result.get("loot", 0))
+		var loot := int(result.get("loot", 0))
+		resources.shinies += loot
+		resources.food += RAID_FOOD                 # robbed a farm -> grub for the warren
 		if not g.is_empty():
-			g.best = maxi(int(g.best), int(result.get("loot", 0)))
-	elif not g.is_empty():
-		g.alive = false
-		fallen.append({"name": g.name, "feat": _feat_for(g)})
+			g.best = maxi(int(g.best), loot)
+		last_event = "%s legged it: +%d shinies, +%d grub." % [who, loot, RAID_FOOD]
+	else:
+		if not g.is_empty():
+			g.alive = false
+			fallen.append({"name": g.name, "feat": _feat_for(g)})
+		last_event = "%s got nabbed — gone for good." % who
 	last_raid = result
 	clear_sent()
 	loadout = ""
