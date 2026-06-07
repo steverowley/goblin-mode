@@ -64,31 +64,36 @@ func _ready() -> void:
 	_label("Tonight's mark: %s" % str(GameState.chosen_target.get("name", "—")),
 		Vector2(40, y + 32), 14).modulate = Color(1, 0.9, 0.6)
 
-	# --- The forced morning choice (right) ---
-	_label("Pack ONE kit for tonight — the other's locked out:", Vector2(360, 86), 16)
-	var cx := 360
+	# --- The forced morning choice (right column, STACKED so nothing overlaps) ---
+	_label("Pack ONE kit for tonight — the other's locked out:", Vector2(360, 84), 16)
+	var ky := 116
 	for kit_id in KITS:
 		var info: Dictionary = KITS[kit_id]
 		var btn := Button.new()
 		btn.text = info.label
-		btn.position = Vector2(cx, 120)
-		btn.size = Vector2(250, 44)
+		btn.position = Vector2(360, ky)
+		btn.size = Vector2(240, 40)
 		btn.pressed.connect(_on_pick.bind(kit_id))
 		add_child(btn)
 		_kit_btns[kit_id] = btn
-		_label(info.blurb, Vector2(cx, 170), 12).modulate = Color(1, 1, 1, 0.7)
-		cx += 270
+		# Blurb under each button, width-constrained + word-wrapped so a long line
+		# can never run into the next column.
+		var blurb := _label(info.blurb, Vector2(360, ky + 44), 12)
+		blurb.size = Vector2(560, 36)
+		blurb.autowrap_mode = TextServer.AUTOWRAP_WORD
+		blurb.modulate = Color(1, 1, 1, 0.7)
+		ky += 100
 
 	# --- Launch (gated on the choice) ---
 	_go_btn = Button.new()
 	_go_btn.text = "Go raid  >"
-	_go_btn.position = Vector2(360, 300)
-	_go_btn.size = Vector2(250, 56)
+	_go_btn.position = Vector2(360, ky + 16)
+	_go_btn.size = Vector2(240, 52)
 	_go_btn.disabled = true
 	_go_btn.pressed.connect(func() -> void: go_raid.emit())
 	add_child(_go_btn)
 
-	_choice_hint = _label("Choose a kit first.", Vector2(360, 366), 14)
+	_choice_hint = _label("Choose a kit first.", Vector2(360, ky + 78), 14)
 	_choice_hint.modulate = Color(1, 0.8, 0.5)
 
 	_refresh()
