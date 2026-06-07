@@ -45,7 +45,7 @@ func _build() -> void:
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg)
 
-	_lbl("THE WARREN — Night %d" % GameState.night, Vector2(36, 14), 22)
+	_lbl("THE WARREN — Night %d        Legacy %d" % [GameState.night, GameState.legacy], Vector2(36, 14), 22)
 	_lbl("Food %d   Shinies %d   Holes %d/%d   Unrest [%s%s]" % [
 		int(GameState.resources.get("food", 0)), int(GameState.resources.get("shinies", 0)),
 		GameState.living().size(), GameState.huts,

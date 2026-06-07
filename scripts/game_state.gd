@@ -55,6 +55,7 @@ var last_event := ""                # short "what just happened" line (raid/fora
 var unrest := 0                     # 0..UNREST_MAX; rises when upkeep goes unpaid
 var night_event := ""               # the random thing that happened in the warren overnight
 var upkeep_note := ""               # last night's upkeep summary (shown in the Den)
+var legacy := 0                     # bloodline renown (meta-progression); recruits scale with it
 
 var _next_id := 0                   # hands out stable unique goblin ids
 var _pup_n := 0                     # rolls through the pup-name pool
@@ -88,6 +89,7 @@ func new_game() -> void:
 	unrest = 0
 	night_event = ""
 	upkeep_note = ""
+	legacy = 0
 
 func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
 	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
@@ -98,6 +100,19 @@ func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary
 ## low for now; genetics (Bite 2b) will replace this with parent inheritance.
 func _random_stats() -> Dictionary:
 	return {"health": randi_range(1, 2), "sneak": randi_range(STAT_MIN, STAT_MAX), "brawn": randi_range(STAT_MIN, STAT_MAX)}
+
+## A fresh recruit's stats (free runt / a stray that joins): random PLUS the
+## warren's accumulated META bonus — so as your legacy grows, recruits arrive
+## tougher (bred pups use genetics instead). This is what carries across a run.
+func _recruit_stats() -> Dictionary:
+	var b := _legacy_bonus()
+	var s := _random_stats()
+	for k in s.keys():
+		s[k] = clampi(int(s[k]) + b, STAT_MIN, STAT_MAX)
+	return s
+
+func _legacy_bonus() -> int:
+	return clampi(legacy / 8, 0, 2)
 
 # --- Queries --------------------------------------------------------------
 
@@ -167,7 +182,7 @@ func breed_pup() -> bool:
 func _breed_stats() -> Dictionary:
 	var ad := adults()
 	if ad.size() < 2:
-		return _random_stats()
+		return _recruit_stats()
 	var best: Dictionary = ad[0]
 	var second: Dictionary = ad[1]
 	if _stat_sum(second) > _stat_sum(best):
@@ -234,6 +249,7 @@ func resolve_raid(result: Dictionary) -> void:
 		var loot := int(result.get("loot", 0))
 		resources.shinies += loot
 		resources.food += RAID_FOOD                 # robbed a farm -> grub for the warren
+		legacy += 1                                 # the bloodline's renown grows with every score
 		if not g.is_empty():
 			g.best = maxi(int(g.best), loot)
 		last_event = "%s legged it: +%d shinies, +%d grub." % [who, loot, RAID_FOOD]
@@ -275,7 +291,7 @@ func advance_night() -> void:
 		night_event = _roll_night_event()
 	# Anti-softlock backstop: never fully wiped out.
 	if living().is_empty():
-		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _random_stats()))
+		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
 
 ## One random overnight happening, applied + described (shown in the Den next
 ## morning). Greybox flavour with light economy nudges.
@@ -291,7 +307,7 @@ func _roll_night_event() -> String:
 		return "A good night's foraging out back — +%d food." % n
 	elif r < 40:
 		if living().size() < huts:
-			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _random_stats()))
+			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
 			return "A stray goblin wandered in an' stayed."
 		return "A stray sniffed about but found no free hole."
 	elif r < 56:
