@@ -561,8 +561,8 @@ func _try_takedown() -> void:
 	var best_d := MELEE_R
 	var f: Vector2 = _player.facing
 	for g in _guards:
-		if g.downed or g.alerted:
-			continue
+		if g.downed or g.alerted or g._can_see_player():
+			continue   # can't sneak-kill a guard that can see you coming — get behind it
 		var v: Vector2 = g.global_position - _player.global_position
 		var d := v.length()
 		if d <= best_d and (d < 8.0 or f.dot(v.normalized()) > 0.25):
@@ -570,6 +570,7 @@ func _try_takedown() -> void:
 			best_d = d
 	if best != null:
 		best.take_down()
+		_emit_noise(best.global_position, 0.5)   # a muffled scuffle — nearby guards may come looking
 		_spawn_text(best.global_position, "*shhk* takedown!", Color(0.7, 1.0, 0.4))
 		_player.add_chaos(0.08)
 	else:
