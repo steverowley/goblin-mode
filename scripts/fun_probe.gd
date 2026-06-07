@@ -53,6 +53,15 @@ signal raid_finished(result: Dictionary)
 var embedded := false
 var _awaiting_return := false        # embedded + resolved: next key returns to the warren
 
+# --- Morning loadout (issue #8): the one kit the Den packed, read from GameState.
+# None when launched directly -> the Fun Probe plays exactly as the base greybox.
+const STINK_R := 220.0               # stink-cloud radius that pulls guards in to investigate
+const STINK_TIME := 3.5              # how long the pong lingers
+var _kit_lockpicks := false          # the barred gate becomes a quiet 2nd exit (no frenzy needed)
+var _stink_charges := 0              # one-shot stink bombs in the sack
+var _stink_pos := Vector2.ZERO
+var _stink_t := 0.0                  # remaining stink-cloud time
+
 var _player: GoblinScript
 var _guards: Array = []       # the tall-folk on patrol (noise routed to all)
 
@@ -87,6 +96,7 @@ func _ready() -> void:
 	_build_stuff()
 	_build_actors()
 	_build_hud()
+	_apply_loadout()
 
 func _init_fog() -> void:
 	# The memory fog lives on its own CanvasLayer above the world (so it covers
@@ -230,6 +240,16 @@ func _build_hud() -> void:
 	_banner.visible = false
 	layer.add_child(_banner)
 
+## Read the morning loadout the Den wrote into GameState (issue #8). Launched
+## directly, GameState.loadout is "" -> no kit -> the raid plays exactly as the
+## base greybox cut always has.
+func _apply_loadout() -> void:
+	match GameState.loadout:
+		GameState.KIT_LOCKPICKS:
+			_kit_lockpicks = true
+		GameState.KIT_STINK:
+			_stink_charges = 1
+
 func _physics_process(delta: float) -> void:
 	if _state != "play":
 		return
@@ -260,11 +280,20 @@ func _physics_process(delta: float) -> void:
 	for g in _guards:
 		g.set_tension(tension)
 
-	# Win first, so reaching the OUT door (with loot) or smashing the gate in
-	# frenzy on the very last frame counts as a win, not a dawn loss.
+	# Stink bomb (issue #8): while the cloud lingers it keeps pulling nearby guards
+	# in to investigate the pong — drop it to drag them off a chokepoint, then slip by.
+	if _stink_t > 0.0:
+		_stink_t -= delta
+		for g in _guards:
+			if g.global_position.distance_to(_stink_pos) < STINK_R:
+				g.hear_noise(_stink_pos, 1.0)
+
+	# Win first, so reaching the OUT door (with loot) or leaving via the gate on the
+	# very last frame counts as a win, not a dawn loss. The gate is a frenzy smash-out
+	# OR, with the lockpicks kit, a quiet exit you can stroll through carrying loot.
 	if _player.sack > 0 and _player.global_position.distance_to(EXIT_POS) < EXIT_R:
 		_win()
-	elif _player.frenzy and _player.global_position.distance_to(GATE_POS) < GATE_R:
+	elif _player.global_position.distance_to(GATE_POS) < GATE_R and (_player.frenzy or (_kit_lockpicks and _player.sack > 0)):
 		_win()
 
 	# Dawn breaks — caught in the open.
@@ -305,6 +334,8 @@ func _input(event: InputEvent) -> void:
 			_spawn_text(_player.global_position, "GOBLIN MODE!", Color(0.6, 1.0, 0.2))
 	elif event.keycode == KEY_E:
 		_smash_near(_player.global_position, SMASH_R, false)
+	elif event.keycode == KEY_F:
+		_deploy_stink()
 
 ## Route a noise event from somewhere in the world to everything that can hear.
 ## (One guard today; a loop over a guard list tomorrow.)
@@ -481,6 +512,16 @@ func _smash_near(pos: Vector2, radius: float, all_in_range: bool) -> void:
 func _spawn_text(pos: Vector2, text: String, color: Color) -> void:
 	_floaters.append({"pos": pos + Vector2(-12, -18), "text": text, "life": 1.2, "max": 1.2, "color": color})
 
+## Lob the one stink bomb at the goblin's feet (issue #8). The cloud then lures
+## nearby guards in to investigate (handled each frame in _physics_process).
+func _deploy_stink() -> void:
+	if _stink_charges <= 0:
+		return
+	_stink_charges -= 1
+	_stink_pos = _player.global_position
+	_stink_t = STINK_TIME
+	_spawn_text(_stink_pos, "*PHWOAR* stink bomb!", Color(0.6, 1.0, 0.3))
+
 func _on_caught() -> void:
 	if _state == "play":
 		_lose("NABBED! A great tall-folk fist scoops you up by the scruff.")
@@ -554,6 +595,14 @@ func _update_info() -> void:
 		flags += "[GUARD ON YOU!]"
 	if flags != "":
 		lines.append(flags.strip_edges())
+	# Kit line (issue #8) — only shown when a morning kit is packed, so the
+	# standalone Fun Probe's HUD is unchanged.
+	if _kit_lockpicks:
+		lines.append("KIT: lockpicks — the barred gate is a quiet way out (reach it carrying loot).")
+	elif _stink_t > 0.0:
+		lines.append("KIT: *stink cloud active* — slip past while they cough!")
+	elif _stink_charges > 0:
+		lines.append("KIT: stink bomb x%d — press F near a chokepoint to lure the guards." % _stink_charges)
 	_info.text = "\n".join(lines)
 
 func _meter(v: float, cells: int) -> String:
@@ -573,11 +622,17 @@ func _draw() -> void:
 	# Walls.
 	for r in _wall_rects:
 		draw_rect(r, Color(0.18, 0.18, 0.24))
-	# Barred gate — smash out here in Goblin Mode.
-	var frenzy := _player != null and _player.frenzy
-	var gate_col := Color(0.75, 0.5, 0.2, 0.95) if frenzy else Color(0.45, 0.35, 0.2, 0.8)
-	draw_rect(Rect2(GATE_POS.x - 6, GATE_POS.y - 28, 12, 56), gate_col)
-	_label(GATE_POS + Vector2(-118, 2), "smash-out (frenzy) ->", Color(0.8, 0.7, 0.4, 0.85))
+	# Barred gate — smash out in Goblin Mode, OR (with the lockpicks kit) a quiet exit.
+	if _kit_lockpicks:
+		var carrying := _player != null and _player.sack > 0
+		var gcol := Color(0.3, 0.7, 1.0, 0.5) if carrying else Color(0.3, 0.7, 1.0, 0.22)
+		draw_rect(Rect2(GATE_POS.x - 6, GATE_POS.y - 28, 12, 56), gcol)
+		_label(GATE_POS + Vector2(-150, 2), "picked — slip out ->", Color(0.6, 0.85, 1.0, 0.9))
+	else:
+		var frenzy := _player != null and _player.frenzy
+		var gate_col := Color(0.75, 0.5, 0.2, 0.95) if frenzy else Color(0.45, 0.35, 0.2, 0.8)
+		draw_rect(Rect2(GATE_POS.x - 6, GATE_POS.y - 28, 12, 56), gate_col)
+		_label(GATE_POS + Vector2(-118, 2), "smash-out (frenzy) ->", Color(0.8, 0.7, 0.4, 0.85))
 	# Exit (brightens once you're carrying loot).
 	var carrying := _player != null and _player.sack > 0
 	var ef := 0.42 if carrying else 0.16
@@ -605,6 +660,12 @@ class _OverlayDraw extends Node2D:
 			probe._draw_overlay(self)
 
 func _draw_overlay(cv: CanvasItem) -> void:
+	# Stink cloud (issue #8) — a green pall, kept bright above the fog, that lures guards in.
+	if _stink_t > 0.0:
+		var sa: float = clampf(_stink_t / STINK_TIME, 0.0, 1.0)
+		cv.draw_circle(_stink_pos, STINK_R, Color(0.5, 0.9, 0.3, 0.08 * sa))
+		cv.draw_arc(_stink_pos, STINK_R, 0.0, TAU, 48, Color(0.6, 1.0, 0.3, 0.5 * sa), 2.0)
+		cv.draw_circle(_stink_pos, 8.0, Color(0.7, 1.0, 0.35, 0.85 * sa))
 	# Where each guard is heading to investigate a noise / search after losing you.
 	for g in _guards:
 		if g.investigating:
