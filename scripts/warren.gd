@@ -131,10 +131,12 @@ func _build_actions() -> void:
 
 func _on_dig() -> void:
 	GameState.dig_hut()
+	GameState.save_game()
 	_build.call_deferred()
 
 func _on_breed() -> void:
 	GameState.breed_pup()
+	GameState.save_game()
 	_build.call_deferred()
 
 func _on_pick_sent(id: int) -> void:

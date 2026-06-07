@@ -8,6 +8,7 @@ extends Node
 ## to JSON, it does not belong in here.
 
 const SCHEMA_VERSION := 1
+const SAVE_PATH := "user://goblin_save.json"
 
 ## The morning loadout the Recruitment Den writes (issue #8): the one kit the
 ## player packs for tonight's raid, which the raid reads to change HOW it plays.
@@ -66,7 +67,8 @@ var _pup_n := 0                     # rolls through the pup-name pool
 const _PUP_NAMES := ["Nib", "Squig", "Gob", "Razza", "Mogg", "Krick", "Dribble", "Snot", "Wretch", "Fang"]
 
 func _ready() -> void:
-	new_game()
+	if not load_game():
+		new_game()
 
 ## Seed a fresh game. (Persisting + loading this — with versioned migration — is
 ## issue #10; for now every launch starts a clean warren.)
@@ -95,6 +97,89 @@ func new_game() -> void:
 	legacy = 0
 	collapse_pressure = 0
 	just_collapsed = false
+
+# --- Save / load (issue #10). GameState is serializable-only by design, so this
+# is a straight JSON dump, versioned for future migration. ----------------------
+
+func _save_dict() -> Dictionary:
+	return {
+		"schema_version": SCHEMA_VERSION,
+		"roster": roster, "resources": resources, "unlocks": unlocks,
+		"chosen_target": chosen_target, "loadout": loadout, "huts": huts, "night": night,
+		"sent_id": sent_id, "fallen": fallen, "last_raid": last_raid, "last_event": last_event,
+		"unrest": unrest, "night_event": night_event, "upkeep_note": upkeep_note,
+		"legacy": legacy, "collapse_pressure": collapse_pressure,
+		"next_id": _next_id, "pup_n": _pup_n,
+	}
+
+func _apply_dict(data: Dictionary) -> bool:
+	if int(data.get("schema_version", -1)) != SCHEMA_VERSION:
+		return false   # incompatible save -> caller starts a new game
+	# Reject a structurally-broken save cleanly, rather than leaning on engine error
+	# recovery when a present-but-wrong-type field would throw on the typed assigns below.
+	if typeof(data.get("roster", [])) != TYPE_ARRAY:
+		return false
+	if typeof(data.get("resources", {})) != TYPE_DICTIONARY:
+		return false
+	if typeof(data.get("fallen", [])) != TYPE_ARRAY:
+		return false
+	if typeof(data.get("unlocks", [])) != TYPE_ARRAY:
+		return false
+	if typeof(data.get("chosen_target", {})) != TYPE_DICTIONARY:
+		return false
+	if typeof(data.get("last_raid", {})) != TYPE_DICTIONARY:
+		return false
+	roster = data.get("roster", [])
+	resources = data.get("resources", {"shinies": 0, "food": START_FOOD})
+	unlocks = data.get("unlocks", [])
+	chosen_target = data.get("chosen_target", {})
+	loadout = String(data.get("loadout", ""))
+	huts = int(data.get("huts", START_HUTS))
+	night = int(data.get("night", 1))
+	sent_id = int(data.get("sent_id", -1))
+	fallen = data.get("fallen", [])
+	last_raid = data.get("last_raid", {})
+	last_event = String(data.get("last_event", ""))
+	unrest = int(data.get("unrest", 0))
+	night_event = String(data.get("night_event", ""))
+	upkeep_note = String(data.get("upkeep_note", ""))
+	legacy = int(data.get("legacy", 0))
+	collapse_pressure = int(data.get("collapse_pressure", 0))
+	_next_id = int(data.get("next_id", roster.size()))
+	_pup_n = int(data.get("pup_n", 0))
+	just_collapsed = false
+	# JSON turns every number into a float — coerce the goblins' ints back.
+	for g in roster:
+		g.id = int(g.get("id", 0))
+		g.best = int(g.get("best", 0))
+		var s: Dictionary = g.get("stats", {})
+		for k in s.keys():
+			s[k] = int(s[k])
+	return true
+
+## Autosave the warren to disk. Skipped under --headless so tests don't clobber a
+## real save.
+func save_game() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	if f != null:
+		f.store_string(JSON.stringify(_save_dict()))
+		f.close()
+
+## Load a saved warren. False (state untouched) if there's no save, it's
+## unreadable, or the schema version mismatches — caller then starts a new game.
+func load_game() -> bool:
+	if not FileAccess.file_exists(SAVE_PATH):
+		return false
+	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	if f == null:
+		return false
+	var data = JSON.parse_string(f.get_as_text())
+	f.close()
+	if typeof(data) != TYPE_DICTIONARY:
+		return false
+	return _apply_dict(data)
 
 func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
 	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
@@ -304,6 +389,7 @@ func advance_night() -> void:
 	# Anti-softlock backstop: never fully wiped out.
 	if living().is_empty():
 		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
+	save_game()
 
 ## The warren has fallen (sustained unrest). A roguelike run-end: the LEGACY carries
 ## forward (+ a bump for the fallen warren's renown) and the wall of the dead is
@@ -330,6 +416,7 @@ func start_new_run() -> void:
 	upkeep_note = ""
 	just_collapsed = true
 	night_event = "Warren COLLAPSED — risen anew. Legacy %d carries on." % legacy
+	save_game()
 
 ## One random overnight happening, applied + described (shown in the Den next
 ## morning). Greybox flavour with light economy nudges.
