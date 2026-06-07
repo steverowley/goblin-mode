@@ -63,6 +63,13 @@ var _stink_pos := Vector2.ZERO
 var _stink_t := 0.0                  # remaining stink-cloud time
 var _sent_name := ""                 # the goblin the Den sent (issue #9); "" when launched directly
 
+# --- Goblin stats the raid reads (Bite 2a). Neutral when launched directly. ---
+const IFRAME_TIME := 1.2             # invulnerable window after wriggling free of a grab
+var _hp := 1                         # sent goblin's Health = grabs it can take before it's nabbed
+var _hp_max := 1
+var _iframe_t := 0.0                 # remaining scramble i-frames
+var _noise_mult := 1.0               # Sneak stat: <1 = quieter to guards (1.0 = neutral/standalone)
+
 var _player: GoblinScript
 var _guards: Array = []       # the tall-folk on patrol (noise routed to all)
 
@@ -202,7 +209,7 @@ func _build_actors() -> void:
 	_guards.append(scout)
 
 	for g in _guards:
-		g.caught_player.connect(_on_caught)
+		g.caught_player.connect(_on_caught.bind(g))
 		g.spotted.connect(_on_spotted.bind(g))
 	# Footsteps reach every guard's ears through the noise router.
 	_player.noise_made.connect(_emit_noise)
@@ -253,10 +260,20 @@ func _apply_loadout() -> void:
 	var sent := GameState.sent_goblin()
 	if not sent.is_empty():
 		_sent_name = String(sent.name)
+		var st: Dictionary = sent.get("stats", {})
+		_hp_max = maxi(1, int(st.get("health", 1)))
+		_hp = _hp_max
+		var lo := float(GameState.STAT_MIN)
+		var hi := float(GameState.STAT_MAX)
+		var sneak_t := clampf((float(int(st.get("sneak", 2))) - lo) / (hi - lo), 0.0, 1.0)
+		var brawn_t := clampf((float(int(st.get("brawn", 2))) - lo) / (hi - lo), 0.0, 1.0)
+		_noise_mult = lerpf(1.25, 0.55, sneak_t)       # higher Sneak = quieter
+		_player.carry = lerpf(0.7, 1.8, brawn_t)       # higher Brawn = lugs loot with less drag
 
 func _physics_process(delta: float) -> void:
 	if _state != "play":
 		return
+	_iframe_t = maxf(0.0, _iframe_t - delta)
 
 	# Lit by any still-burning lantern with a CLEAR line to the goblin — duck
 	# behind a wall and that light no longer reaches you (you're in shadow, hidden).
@@ -312,6 +329,10 @@ func _process(delta: float) -> void:
 	_floaters = _floaters.filter(func(f): return f.life > 0.0)
 	if _tint != null:
 		_tint.visible = (_state == "play" and _player.frenzy)
+	if _player != null:
+		# Flicker while scrambling free — but snap back to opaque the moment the raid
+		# ends, since _iframe_t stops ticking once _state leaves "play".
+		_player.modulate.a = 0.45 if (_iframe_t > 0.0 and _state == "play") else 1.0
 	_update_info()
 	queue_redraw()
 	if _overlay != null:
@@ -345,7 +366,7 @@ func _input(event: InputEvent) -> void:
 ## (One guard today; a loop over a guard list tomorrow.)
 func _emit_noise(pos: Vector2, loudness: float) -> void:
 	for g in _guards:
-		g.hear_noise(pos, loudness)
+		g.hear_noise(pos, loudness * _noise_mult)
 
 ## Is the goblin lit? Only by a burning lantern within reach AND with no wall
 ## between — so a wall (or a smashed-out lantern) carves a safe pocket of dark.
@@ -526,9 +547,21 @@ func _deploy_stink() -> void:
 	_stink_t = STINK_TIME
 	_spawn_text(_stink_pos, "*PHWOAR* stink bomb!", Color(0.6, 1.0, 0.3))
 
-func _on_caught() -> void:
-	if _state == "play":
+func _on_caught(g) -> void:
+	if _state != "play":
+		return
+	if _iframe_t > 0.0:
+		g.shake_off()               # already scrambling — re-arm this guard so its catch can't latch defanged
+		return
+	_hp -= 1
+	if _hp <= 0:
 		_lose("NABBED! A great tall-folk fist scoops you up by the scruff.")
+		return
+	# Had health to spare — wriggle free and bolt (brief i-frames; the guard loses its grip).
+	_iframe_t = IFRAME_TIME
+	_player.velocity = Vector2.ZERO
+	_spawn_text(_player.global_position, "GRABBED! -1 (%d left)" % _hp, Color(1, 0.4, 0.4))
+	g.shake_off()
 
 func _on_spotted(g) -> void:
 	if _state == "play":
@@ -608,7 +641,8 @@ func _update_info() -> void:
 	elif _stink_charges > 0:
 		lines.append("KIT: stink bomb x%d — press F near a chokepoint to lure the guards." % _stink_charges)
 	if _sent_name != "":
-		lines.append("On the line tonight: %s — get 'em home alive." % _sent_name)
+		lines.append("On the line: %s   HP [%s%s]   (get 'em home alive)" % [
+			_sent_name, "#".repeat(_hp), "-".repeat(maxi(0, _hp_max - _hp))])
 	_info.text = "\n".join(lines)
 
 func _meter(v: float, cells: int) -> String:

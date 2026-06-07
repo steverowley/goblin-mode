@@ -26,6 +26,12 @@ const BREED_FOOD := 4          # food to breed one pup
 const DIG_SHINIES := 8         # shinies to dig a new mud-hole (+1 capacity)
 const RAID_FOOD := 5           # grub nicked from a farm on a successful raid (raids are the larder)
 
+## Goblin stats (Bite 2a). Each 1..STAT_MAX. Health = hits survived on a raid;
+## Sneak = quieter; Brawn = lugs loot with less drag. Starters skew LOW health so
+## early raids reward stealth — combat-readiness comes from gear/meta later.
+const STAT_MIN := 1
+const STAT_MAX := 4
+
 var schema_version := SCHEMA_VERSION
 var roster: Array = []              # every goblin ever (alive flag marks the living), each a Dictionary
 var resources: Dictionary = {}      # {"shinies": int, "food": int}
@@ -53,7 +59,11 @@ func new_game() -> void:
 	schema_version = SCHEMA_VERSION
 	_next_id = 0
 	_pup_n = 0
-	roster = [_make_goblin("Snik", STAGE_ADULT), _make_goblin("Grubba", STAGE_ADULT), _make_goblin("Wort", STAGE_ADULT)]
+	roster = [
+		_make_goblin("Snik", STAGE_ADULT, {"health": 1, "sneak": 4, "brawn": 1}),    # glass sneak — must ghost
+		_make_goblin("Grubba", STAGE_ADULT, {"health": 2, "sneak": 1, "brawn": 4}),  # loud bruiser
+		_make_goblin("Wort", STAGE_ADULT, {"health": 2, "sneak": 2, "brawn": 2}),    # all-rounder
+	]
 	resources = {"shinies": 0, "food": START_FOOD}
 	unlocks = []
 	chosen_target = {"name": "Millfield Cottage", "difficulty": 1}
@@ -65,10 +75,15 @@ func new_game() -> void:
 	last_raid = {}
 	last_event = ""
 
-func _make_goblin(gname: String, stage: String) -> Dictionary:
-	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0}
+func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
+	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
 	_next_id += 1
 	return g
+
+## Random starting stats for a fresh recruit (bred pup / free runt). Health skews
+## low for now; genetics (Bite 2b) will replace this with parent inheritance.
+func _random_stats() -> Dictionary:
+	return {"health": randi_range(1, 2), "sneak": randi_range(STAT_MIN, STAT_MAX), "brawn": randi_range(STAT_MIN, STAT_MAX)}
 
 # --- Queries --------------------------------------------------------------
 
@@ -114,7 +129,7 @@ func breed_pup() -> bool:
 	if not can_breed():
 		return false
 	resources.food -= BREED_FOOD
-	roster.append(_make_goblin(_pup_name(), STAGE_PUP))
+	roster.append(_make_goblin(_pup_name(), STAGE_PUP, _random_stats()))
 	return true
 
 func set_sent(id: int) -> void:
@@ -179,7 +194,7 @@ func advance_night() -> void:
 		if g.alive and g.stage == STAGE_PUP:
 			g.stage = STAGE_ADULT
 	if living().is_empty():
-		roster.append(_make_goblin(_pup_name(), STAGE_ADULT))
+		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _random_stats()))   # a free runt wanders in
 
 func _feat_for(g: Dictionary) -> String:
 	if int(g.get("best", 0)) > 0:

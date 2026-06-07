@@ -24,6 +24,7 @@ var is_sneaking := false
 var is_lit := false
 var sack := 0                    # shinies grabbed (value)
 var weight := 0.0                # sack weight (slows + loudens you)
+var carry := 1.0                 # brawn stat: >1 lugs a heavy sack with less drag/noise (1.0 = neutral)
 var frenzy := false
 var frenzy_timer := 0.0
 var facing := Vector2.RIGHT
@@ -64,7 +65,7 @@ func _physics_process(delta: float) -> void:
 		speed = FRENZY_SPEED
 	else:
 		var base := SNEAK_SPEED if is_sneaking else WALK_SPEED
-		speed = base * clampf(1.0 - weight * WEIGHT_DRAG, 0.45, 1.0)
+		speed = base * clampf(1.0 - weight * WEIGHT_DRAG / carry, 0.45, 1.0)
 
 	velocity = dir * speed
 	move_and_slide()
@@ -74,7 +75,7 @@ func _physics_process(delta: float) -> void:
 	if frenzy:
 		noise = 1.0
 	else:
-		var floor_n := clampf(weight * 0.025, 0.0, 0.5)
+		var floor_n := clampf(weight * 0.025 / carry, 0.0, 0.5)
 		if dir != Vector2.ZERO:
 			facing = dir
 			var gain := (0.10 if is_sneaking else 0.45)
