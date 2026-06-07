@@ -22,7 +22,8 @@ const DAWN_SECONDS := 80.0
 const DAWN_RAMP := 26.0          # final seconds where dawn-tension ramps the guards up
 const GRAB_R := 20.0
 const SMASH_R := 36.0
-const MELEE_R := 34.0            # reach of a stealth takedown (Bite 2.5)
+const MELEE_R := 34.0            # reach of a melee stab (Bite 2.5)
+const STAB_CD := 0.75            # min gap between stabs — longer than a guard's windup so you can't flinch-lock it
 const PLAYER_START := Vector2(80, 470)
 const EXIT_POS := Vector2(80, 80)
 const EXIT_R := 34.0
@@ -69,6 +70,7 @@ const IFRAME_TIME := 1.2             # invulnerable window after wriggling free 
 var _hp := 1                         # sent goblin's Health = grabs it can take before it's nabbed
 var _hp_max := 1
 var _iframe_t := 0.0                 # remaining scramble i-frames
+var _stab_cd := 0.0                  # cooldown between melee stabs
 var _noise_mult := 1.0               # Sneak stat: <1 = quieter to guards (1.0 = neutral/standalone)
 
 var _player: GoblinScript
@@ -189,6 +191,7 @@ func _build_actors() -> void:
 	# Guard A — a big slow "brute" looping the central room (R3), the chokepoint.
 	var brute := GuardScript.new()
 	brute.nav = self           # pathfinds through doorways via the level's A* grid
+	brute.hp = 4               # the big brute soaks more hits in an open fight
 	add_child(brute)
 	brute.setup(PackedVector2Array([
 		Vector2(400, 100), Vector2(560, 100), Vector2(560, 460), Vector2(400, 460),
@@ -203,6 +206,7 @@ func _build_actors() -> void:
 	scout.chase_speed = 122.0
 	scout.view_dist = 235.0
 	scout.body_color = Color(0.85, 0.5, 0.2)   # orange — tells it apart from the brute
+	scout.hp = 2               # the fast scout is fragile
 	add_child(scout)
 	scout.setup(PackedVector2Array([
 		Vector2(760, 100), Vector2(900, 130), Vector2(900, 450), Vector2(720, 440),
@@ -275,6 +279,7 @@ func _physics_process(delta: float) -> void:
 	if _state != "play":
 		return
 	_iframe_t = maxf(0.0, _iframe_t - delta)
+	_stab_cd = maxf(0.0, _stab_cd - delta)
 
 	# Lit by any still-burning lantern with a CLEAR line to the goblin — duck
 	# behind a wall and that light no longer reaches you (you're in shadow, hidden).
@@ -331,9 +336,10 @@ func _process(delta: float) -> void:
 	if _tint != null:
 		_tint.visible = (_state == "play" and _player.frenzy)
 	if _player != null:
-		# Flicker while scrambling free — but snap back to opaque the moment the raid
-		# ends, since _iframe_t stops ticking once _state leaves "play".
-		_player.modulate.a = 0.45 if (_iframe_t > 0.0 and _state == "play") else 1.0
+		# Flicker while scrambling free OR mid dodge-roll — but snap opaque the moment
+		# the raid ends, since those timers stop ticking once _state leaves "play".
+		var inv: bool = (_iframe_t > 0.0 or _player.dashing) and _state == "play"
+		_player.modulate.a = 0.45 if inv else 1.0
 	_update_info()
 	queue_redraw()
 	if _overlay != null:
@@ -346,6 +352,10 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		if _state == "play":
 			_try_takedown()
+		return
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+		if _state == "play":
+			_player.start_dash()
 		return
 	if not (event is InputEventKey and event.pressed):
 		return
@@ -557,30 +567,42 @@ func _deploy_stink() -> void:
 ## that ISN'T already chasing you. A guard that's onto you (alerted) shrugs it off
 ## — that's the open-brawl rung (v2). Quiet: no alarm raised.
 func _try_takedown() -> void:
+	if _stab_cd > 0.0:
+		return                       # still recovering from the last stab — no spam-locking
+	_stab_cd = STAB_CD
 	var best = null
 	var best_d := MELEE_R
 	var f: Vector2 = _player.facing
 	for g in _guards:
-		if g.downed or g.alerted or g._can_see_player():
-			continue   # can't sneak-kill a guard that can see you coming — get behind it
+		if g.downed:
+			continue
 		var v: Vector2 = g.global_position - _player.global_position
 		var d := v.length()
 		if d <= best_d and (d < 8.0 or f.dot(v.normalized()) > 0.25):
 			best = g
 			best_d = d
-	if best != null:
+	if best == null:
+		_spawn_text(_player.global_position, "*swipe*", Color(0.8, 0.8, 0.8))
+		return
+	_emit_noise(best.global_position, 0.5)   # a scuffle — nearby guards may come looking
+	if best.alerted:
+		# It's already onto you -> an open-brawl hit that chips its HP (it swings back).
+		if best.take_hit(1):
+			_spawn_text(best.global_position, "DOWNED!", Color(1.0, 0.5, 0.3))
+		else:
+			_spawn_text(best.global_position, "*hit!*", Color(1.0, 0.7, 0.4))
+		_player.add_chaos(0.05)
+	else:
+		# Unaware -> a silent one-hit takedown.
 		best.take_down()
-		_emit_noise(best.global_position, 0.5)   # a muffled scuffle — nearby guards may come looking
 		_spawn_text(best.global_position, "*shhk* takedown!", Color(0.7, 1.0, 0.4))
 		_player.add_chaos(0.08)
-	else:
-		_spawn_text(_player.global_position, "*swipe*", Color(0.8, 0.8, 0.8))
 
 func _on_caught(g) -> void:
 	if _state != "play":
 		return
-	if _iframe_t > 0.0:
-		g.shake_off()               # already scrambling — re-arm this guard so its catch can't latch defanged
+	if _iframe_t > 0.0 or _player.dashing:
+		g.shake_off()               # scrambling or mid dodge-roll — re-arm this guard, no hit lands
 		return
 	_hp -= 1
 	if _hp <= 0:
@@ -631,7 +653,7 @@ func _show_banner(text: String) -> void:
 
 func _update_info() -> void:
 	var lines := PackedStringArray()
-	lines.append("WASD move   Mouse aim   LMB takedown   Shift sneak   E smash   SPACE Goblin Mode   R restart")
+	lines.append("WASD move   Mouse aim   LMB stab   RMB dash   Shift sneak   E smash   SPACE Goblin Mode   R restart")
 	var tag := ""
 	if _player.frenzy:
 		tag = "  *** GOBLIN MODE! ***"

@@ -25,6 +25,7 @@ var half_fov := deg_to_rad(34.0)
 var hear_range := 330.0          # how far a loudness-1.0 noise carries with no walls
 var hear_threshold := 0.12       # quieter than this (after falloff + walls) = unheard
 var body_color := Color(0.8, 0.3, 0.3)   # greybox body tint (per guard type)
+var hp := 3                              # open-brawl health (per guard type); 0 = downed
 
 # --- Shared behaviour tuning (the same for every guard). ---
 const WALL_MUFFLE := 0.32        # a wall between guard and the sound dampens it to this
@@ -35,7 +36,9 @@ const SUSPICION_DECAY := 0.45    # how fast suspicion drains when it senses noth
 const SEARCH_TIME := 3.5         # seconds spent poking around last-seen before giving up
 const INVESTIGATE_TIME := 4.0    # seconds chasing a heard-noise point before giving up
 const SCAN_RATE := 1.5           # how fast the gaze sweeps while standing and searching
-const CATCH_DIST := 24.0
+const STRIKE_R := 30.0           # reach of a guard's telegraphed melee swing
+const WINDUP_TIME := 0.45        # the tell — it rears back this long before the blow lands (dodge it!)
+const STRIKE_CD := 0.85          # minimum gap between swings
 
 const GoblinScript := preload("res://scripts/player.gd")
 
@@ -51,6 +54,9 @@ var alerted := false
 var investigating := false
 var searching := false
 var downed := false              # stealth-taken-down — inert for the rest of the raid
+var winding := false             # mid telegraphed wind-up (open brawl)
+var _windup_t := 0.0
+var _strike_cd := 0.0
 
 var _wp := 0
 var _player: GoblinScript = null
@@ -106,12 +112,43 @@ func shake_off() -> void:
 ## raid — inert, blind, and harmless.
 func take_down() -> void:
 	downed = true
+	winding = false
 	velocity = Vector2.ZERO
 	alerted = false
 	investigating = false
 	searching = false
 	_cone_pts = PackedVector2Array()
 	queue_redraw()
+
+## Open brawl: the goblin's stab lands on an ALREADY-ALERTED guard, chipping its
+## health. At 0 it goes down. A hit also jolts it out of a wind-up (a flinch).
+func take_hit(dmg: int) -> bool:
+	hp -= dmg
+	if hp <= 0:
+		take_down()
+		return true
+	winding = false
+	_strike_cd = maxf(_strike_cd, 0.25)
+	return false
+
+## Telegraphed melee strike (open brawl). In a chase, once it's in reach it REARS
+## BACK (a visible tell) then swings — dodge by getting out of reach before it lands.
+func _attack_step(delta: float) -> void:
+	_strike_cd = maxf(0.0, _strike_cd - delta)
+	if state != State.CHASE or _player == null:
+		winding = false
+		return
+	if winding:
+		_windup_t -= delta
+		if _windup_t <= 0.0:
+			winding = false
+			_strike_cd = STRIKE_CD
+			if not _caught and global_position.distance_to(_player.global_position) < STRIKE_R:
+				_caught = true
+				caught_player.emit()        # the blow connects — the level applies it as a hit + scramble
+	elif global_position.distance_to(_player.global_position) < STRIKE_R and _strike_cd <= 0.0:
+		winding = true
+		_windup_t = WINDUP_TIME
 
 func _physics_process(delta: float) -> void:
 	if downed:
@@ -121,11 +158,8 @@ func _physics_process(delta: float) -> void:
 		last_seen = _player.global_position
 		heard_pos = _player.global_position
 	_decide(delta)
+	_attack_step(delta)
 	_act(delta)
-
-	if not _caught and state == State.CHASE and _player != null and global_position.distance_to(_player.global_position) < CATCH_DIST:
-		_caught = true
-		caught_player.emit()
 
 	if state != State.CHASE:
 		_compute_cone()
@@ -239,6 +273,10 @@ func _to_patrol() -> void:
 # --- BODY -----------------------------------------------------------------
 
 func _act(delta: float) -> void:
+	if winding:
+		velocity = Vector2.ZERO          # committed to the swing — this gap is the dodge window
+		move_and_slide()
+		return
 	var p_speed := patrol_speed * (1.0 + 0.5 * _tension)
 	var target := global_position
 	var speed := 0.0
@@ -325,9 +363,16 @@ func _draw() -> void:
 			cone_col = Color(1, 0.55, 0.1, 0.13)
 		draw_colored_polygon(_cone_pts, cone_col)
 
+	# Telegraphed strike wind-up — a red tell the player reads to dodge.
+	if winding and _player != null:
+		var tp := 1.0 - clampf(_windup_t / WINDUP_TIME, 0.0, 1.0)   # 0..1 as the swing charges
+		var dirp := (_player.global_position - global_position).normalized()
+		draw_circle(Vector2.ZERO, 22.0 + 8.0 * tp, Color(1.0, 0.2, 0.1, 0.22))
+		draw_line(Vector2.ZERO, dirp * (STRIKE_R * tp), Color(1.0, 0.35, 0.1, 0.85), 3.0)
 	# Big tall-folk body (deliberately larger than the goblin).
-	draw_rect(Rect2(-16, -16, 32, 32), body_color)
-	draw_rect(Rect2(-16, -16, 32, 32), body_color.darkened(0.45), false, 2.0)
+	var bcol: Color = body_color.lerp(Color(1.0, 0.25, 0.1), 0.5) if winding else body_color
+	draw_rect(Rect2(-16, -16, 32, 32), bcol)
+	draw_rect(Rect2(-16, -16, 32, 32), bcol.darkened(0.45), false, 2.0)
 	draw_line(Vector2.ZERO, facing * 22.0, Color.WHITE, 2.0)
 
 	# State pip: red chase, sky-blue search, orange investigate, amber niggle.
