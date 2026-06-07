@@ -37,8 +37,8 @@ const SEARCH_TIME := 3.5         # seconds spent poking around last-seen before 
 const INVESTIGATE_TIME := 4.0    # seconds chasing a heard-noise point before giving up
 const SCAN_RATE := 1.5           # how fast the gaze sweeps while standing and searching
 const STRIKE_R := 30.0           # reach of a guard's telegraphed melee swing
-const WINDUP_TIME := 0.45        # the tell — it rears back this long before the blow lands (dodge it!)
-const STRIKE_CD := 0.85          # minimum gap between swings
+const WINDUP_TIME := 0.35        # the tell — it rears back this long before the blow lands (dodge it!)
+const STRIKE_CD := 0.4           # minimum gap between swings (aggressive)
 
 const GoblinScript := preload("res://scripts/player.gd")
 
@@ -120,15 +120,14 @@ func take_down() -> void:
 	_cone_pts = PackedVector2Array()
 	queue_redraw()
 
-## Open brawl: the goblin's stab lands on an ALREADY-ALERTED guard, chipping its
-## health. At 0 it goes down. A hit also jolts it out of a wind-up (a flinch).
+## Open brawl: the goblin's swipe chips an ALERTED guard's health. At 0 it goes
+## down. Its swing is NOT interrupted by a hit — the guard commits, so you must
+## dodge or eat it.
 func take_hit(dmg: int) -> bool:
 	hp -= dmg
 	if hp <= 0:
 		take_down()
 		return true
-	winding = false
-	_strike_cd = maxf(_strike_cd, 0.25)
 	return false
 
 ## Telegraphed melee strike (open brawl). In a chase, once it's in reach it REARS

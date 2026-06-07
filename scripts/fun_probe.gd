@@ -22,8 +22,10 @@ const DAWN_SECONDS := 80.0
 const DAWN_RAMP := 26.0          # final seconds where dawn-tension ramps the guards up
 const GRAB_R := 20.0
 const SMASH_R := 36.0
-const MELEE_R := 34.0            # reach of a melee stab (Bite 2.5)
-const STAB_CD := 0.75            # min gap between stabs — longer than a guard's windup so you can't flinch-lock it
+const MELEE_R := 38.0            # reach of a sword swipe (Bite 2.5)
+const STAB_CD := 0.3             # gap between swipes (quick — guard swings are uninterruptible, so no flinch-lock)
+const SWIPE_HALF := deg_to_rad(55.0)   # half-angle of the frontal swipe cone
+const SWIPE_TIME := 0.14         # how long the swipe arc is drawn
 const PLAYER_START := Vector2(80, 470)
 const EXIT_POS := Vector2(80, 80)
 const EXIT_R := 34.0
@@ -70,7 +72,9 @@ const IFRAME_TIME := 1.2             # invulnerable window after wriggling free 
 var _hp := 1                         # sent goblin's Health = grabs it can take before it's nabbed
 var _hp_max := 1
 var _iframe_t := 0.0                 # remaining scramble i-frames
-var _stab_cd := 0.0                  # cooldown between melee stabs
+var _stab_cd := 0.0                  # cooldown between sword swipes
+var _swipe_t := 0.0                  # swipe-arc draw timer
+var _swipe_dir := Vector2.RIGHT
 var _noise_mult := 1.0               # Sneak stat: <1 = quieter to guards (1.0 = neutral/standalone)
 
 var _player: GoblinScript
@@ -280,6 +284,7 @@ func _physics_process(delta: float) -> void:
 		return
 	_iframe_t = maxf(0.0, _iframe_t - delta)
 	_stab_cd = maxf(0.0, _stab_cd - delta)
+	_swipe_t = maxf(0.0, _swipe_t - delta)
 
 	# Lit by any still-burning lantern with a CLEAR line to the goblin — duck
 	# behind a wall and that light no longer reaches you (you're in shadow, hidden).
@@ -563,40 +568,38 @@ func _deploy_stink() -> void:
 	_stink_t = STINK_TIME
 	_spawn_text(_stink_pos, "*PHWOAR* stink bomb!", Color(0.6, 1.0, 0.3))
 
-## A melee stealth takedown (Bite 2.5): drop the nearest guard you're aiming at
-## that ISN'T already chasing you. A guard that's onto you (alerted) shrugs it off
-## — that's the open-brawl rung (v2). Quiet: no alarm raised.
+## A sword swipe (LMB): a quick arc in FRONT of the goblin (where you're aiming).
+## EVERYTHING in the cone is hit — an UNAWARE guard is a silent takedown, an
+## ALERTED one takes a chip of HP (it swings back). Multi-target.
 func _try_takedown() -> void:
 	if _stab_cd > 0.0:
-		return                       # still recovering from the last stab — no spam-locking
+		return
 	_stab_cd = STAB_CD
-	var best = null
-	var best_d := MELEE_R
 	var f: Vector2 = _player.facing
+	_swipe_t = SWIPE_TIME
+	_swipe_dir = f
+	var hit_any := false
 	for g in _guards:
 		if g.downed:
 			continue
 		var v: Vector2 = g.global_position - _player.global_position
 		var d := v.length()
-		if d <= best_d and (d < 8.0 or f.dot(v.normalized()) > 0.25):
-			best = g
-			best_d = d
-	if best == null:
-		_spawn_text(_player.global_position, "*swipe*", Color(0.8, 0.8, 0.8))
-		return
-	_emit_noise(best.global_position, 0.5)   # a scuffle — nearby guards may come looking
-	if best.alerted:
-		# It's already onto you -> an open-brawl hit that chips its HP (it swings back).
-		if best.take_hit(1):
-			_spawn_text(best.global_position, "DOWNED!", Color(1.0, 0.5, 0.3))
+		if d > MELEE_R:
+			continue
+		if d > 8.0 and absf(f.angle_to(v)) > SWIPE_HALF:
+			continue                 # outside the swipe arc
+		hit_any = true
+		if g.alerted:
+			if g.take_hit(1):
+				_spawn_text(g.global_position, "DOWNED!", Color(1.0, 0.5, 0.3))
+			else:
+				_spawn_text(g.global_position, "*hit!*", Color(1.0, 0.7, 0.4))
 		else:
-			_spawn_text(best.global_position, "*hit!*", Color(1.0, 0.7, 0.4))
-		_player.add_chaos(0.05)
-	else:
-		# Unaware -> a silent one-hit takedown.
-		best.take_down()
-		_spawn_text(best.global_position, "*shhk* takedown!", Color(0.7, 1.0, 0.4))
-		_player.add_chaos(0.08)
+			g.take_down()
+			_spawn_text(g.global_position, "*shhk*", Color(0.7, 1.0, 0.4))
+	if hit_any:
+		_emit_noise(_player.global_position, 0.5)   # a scuffle — nearby guards may come looking
+		_player.add_chaos(0.06)
 
 func _on_caught(g) -> void:
 	if _state != "play":
@@ -751,6 +754,11 @@ class _OverlayDraw extends Node2D:
 			probe._draw_overlay(self)
 
 func _draw_overlay(cv: CanvasItem) -> void:
+	# Sword swipe arc (Bite 2.5) — a quick slash drawn in front of the goblin.
+	if _swipe_t > 0.0 and _player != null:
+		var sa := _swipe_dir.angle()
+		var salpha := clampf(_swipe_t / SWIPE_TIME, 0.0, 1.0)
+		cv.draw_arc(_player.global_position, MELEE_R, sa - SWIPE_HALF, sa + SWIPE_HALF, 18, Color(1, 1, 1, 0.85 * salpha), 3.0)
 	# Stink cloud (issue #8) — a green pall, kept bright above the fog, that lures guards in.
 	if _stink_t > 0.0:
 		var sa: float = clampf(_stink_t / STINK_TIME, 0.0, 1.0)
