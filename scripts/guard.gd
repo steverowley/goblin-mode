@@ -91,6 +91,16 @@ func _ready() -> void:
 func set_tension(t: float) -> void:
 	_tension = clampf(t, 0.0, 1.0)
 
+## The goblin wriggled out of the grab (it had health to spare). Re-arm the catch
+## and drop to a short search so the player gets a window to leg it.
+func shake_off() -> void:
+	_caught = false
+	if _player != null:
+		last_seen = _player.global_position
+	state = State.SEARCH
+	_search_t = SEARCH_TIME
+	suspicion = 0.9
+
 func _physics_process(delta: float) -> void:
 	_seen = _can_see_player()
 	if _seen and _player != null:

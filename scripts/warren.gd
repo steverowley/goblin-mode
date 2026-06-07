@@ -57,7 +57,7 @@ func _build() -> void:
 	_build_actions()
 
 func _build_roster() -> void:
-	_lbl("Send a goblin tonight (click an adult):", Vector2(36, 96), 14)
+	_lbl("Send tonight (click an adult)    —    H = hits   S = sneak   B = brawn", Vector2(36, 96), 13)
 	# Adults first (they're the pickable ones), then pups — so a sendable goblin is
 	# always near the top, and the list is capped so it never runs off a big warren.
 	var rows: Array = GameState.adults()
@@ -72,12 +72,12 @@ func _build_roster() -> void:
 		var g: Dictionary = rows[i]
 		if g.stage == GameState.STAGE_ADULT:
 			var sent: bool = (g.id == GameState.sent_id)
-			_btn("%s  [adult]%s" % [g.name, "   <- SENT" if sent else ""],
+			_btn("%s  [%s]%s" % [g.name, _stat_str(g), "   <- SENT" if sent else ""],
 				Vector2(36, ry), Vector2(290, 30),
 				_on_pick_sent.bind(g.id), false,
 				Color(0.6, 1.0, 0.5) if sent else Color.WHITE)
 		else:
-			_lbl("%s   (pup — grows up tonight)" % g.name, Vector2(40, ry + 6), 13, Color(1, 1, 1, 0.5))
+			_lbl("%s  [%s] (pup — grows up tonight)" % [g.name, _stat_str(g)], Vector2(40, ry + 6), 13, Color(1, 1, 1, 0.5))
 		ry += 36
 
 	# Wall of the dead — anchored to a fixed lower-left spot, independent of roster size.
@@ -161,6 +161,10 @@ func _night_hint(can_raid: bool) -> String:
 	return "To raid: " + " + ".join(need) + ".\nOr just forage tonight."
 
 # --- Tiny builders --------------------------------------------------------
+
+func _stat_str(g: Dictionary) -> String:
+	var s: Dictionary = g.get("stats", {})
+	return "H%d S%d B%d" % [int(s.get("health", 1)), int(s.get("sneak", 2)), int(s.get("brawn", 2))]
 
 func _lbl(text: String, pos: Vector2, size := 14, col := Color.WHITE) -> Label:
 	var l := Label.new()
