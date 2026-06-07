@@ -138,6 +138,9 @@ func take_hit(dmg: int) -> bool:
 	if _player != null:
 		last_seen = _player.global_position
 		heard_pos = _player.global_position
+		var to_p := _player.global_position - global_position
+		if to_p.length() > 0.1:
+			facing = to_p.normalized()   # whirl round to face where the hit came from
 	suspicion = 1.0
 	state = State.CHASE
 	alerted = true
