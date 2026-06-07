@@ -46,24 +46,27 @@ func _build() -> void:
 	add_child(bg)
 
 	_lbl("THE WARREN — Night %d" % GameState.night, Vector2(36, 14), 22)
-	_lbl("Food %d    Shinies %d    Holes %d/%d" % [
+	_lbl("Food %d   Shinies %d   Holes %d/%d   Unrest [%s%s]" % [
 		int(GameState.resources.get("food", 0)), int(GameState.resources.get("shinies", 0)),
 		GameState.living().size(), GameState.huts,
-	], Vector2(36, 50), 15, Color(1, 0.9, 0.6))
+		"#".repeat(GameState.unrest), "-".repeat(GameState.UNREST_MAX - GameState.unrest),
+	], Vector2(36, 48), 14, Color(1, 0.9, 0.6))
 	if GameState.last_event != "":
-		_lbl(GameState.last_event, Vector2(36, 74), 13, Color(0.75, 1.0, 0.7))
+		_lbl(GameState.last_event, Vector2(36, 72), 13, Color(0.75, 1.0, 0.7))
+	if GameState.night_event != "":
+		_lbl(GameState.night_event, Vector2(36, 90), 12, Color(0.8, 0.85, 1.0))
 
 	_build_roster()
 	_build_actions()
 
 func _build_roster() -> void:
-	_lbl("Send tonight (click an adult)    —    H = hits   S = sneak   B = brawn", Vector2(36, 96), 13)
+	_lbl("Send tonight (click an adult)    —    H = hits   S = sneak   B = brawn", Vector2(36, 114), 13)
 	# Adults first (they're the pickable ones), then pups — so a sendable goblin is
 	# always near the top, and the list is capped so it never runs off a big warren.
 	var rows: Array = GameState.adults()
 	rows.append_array(GameState.pups())
 
-	var ry := 120
+	var ry := 138
 	var max_visible := 8
 	for i in range(rows.size()):
 		if i == max_visible - 1 and rows.size() > max_visible:
