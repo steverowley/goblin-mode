@@ -63,8 +63,9 @@ func _build() -> void:
 	add_child(bg)
 
 	_lbl("THE WARREN — Night %d        Legacy %d" % [GameState.night, GameState.legacy], Vector2(36, 14), 22)
-	_lbl("Food %d   Shinies %d   Holes %d/%d   Unrest [%s%s]" % [
+	_lbl("Food %d   Shinies %d   Scrap %d   Holes %d/%d   Unrest [%s%s]" % [
 		int(GameState.resources.get("food", 0)), int(GameState.resources.get("shinies", 0)),
+		int(GameState.resources.get("scrap", 0)),
 		GameState.living().size(), GameState.huts,
 		"#".repeat(GameState.unrest), "-".repeat(GameState.UNREST_MAX - GameState.unrest),
 	], Vector2(36, 48), 14, Color(1, 0.9, 0.6))
@@ -84,7 +85,7 @@ func _build() -> void:
 	_build_actions()
 
 func _build_roster() -> void:
-	_lbl("Send tonight (click an adult)    —    H = hits   S = sneak   B = brawn", Vector2(36, 132), 13)
+	_lbl("Click a name = send raiding   ·   [job] = assign overnight work   —   H hits  S sneak  B brawn", Vector2(36, 132), 12)
 	# Adults first (they're the pickable ones), then pups — so a sendable goblin is
 	# always near the top, and the list is capped so it never runs off a big warren.
 	var rows: Array = GameState.adults()
@@ -103,6 +104,9 @@ func _build_roster() -> void:
 				Vector2(36, ry), Vector2(290, 30),
 				_on_pick_sent.bind(g.id), false,
 				Color(0.6, 1.0, 0.5) if sent else Color.WHITE)
+			# Overnight job toggle (#12) — disabled for the raider (it's out tonight).
+			_btn(_job_label(g), Vector2(332, ry), Vector2(126, 30), _on_cycle_job.bind(g.id), sent,
+				Color(1, 1, 1, 0.35) if sent else _job_tint(g))
 		else:
 			var mtag: String = "  *MUTANT*" if g.get("mutant", false) else ""
 			_lbl("%s  [%s]%s (pup — grows up tonight)%s" % [g.name, _stat_str(g), _trait_tag(g), mtag], Vector2(40, ry + 6), 13, Color(1, 0.9, 0.6) if mtag != "" else Color(1, 1, 1, 0.5))
@@ -121,7 +125,7 @@ func _build_roster() -> void:
 func _build_actions() -> void:
 	# Build actions (instant, repeatable while affordable).
 	_lbl("Build (anytime):", Vector2(470, 54), 14)
-	_btn("Dig a mud-hole   (%d shinies)" % GameState.DIG_SHINIES, Vector2(470, 80), Vector2(260, 30), _on_dig, not GameState.can_dig())
+	_btn("Dig a mud-hole   (%d scrap)" % GameState.DIG_SCRAP, Vector2(470, 80), Vector2(260, 30), _on_dig, not GameState.can_dig())
 	_btn("Breed a pup   (%d food)" % GameState.BREED_FOOD, Vector2(470, 114), Vector2(260, 30), _on_breed, not GameState.can_breed())
 	_lbl(_breed_hint(), Vector2(470, 148), 12, Color(1, 1, 1, 0.55))
 
@@ -182,6 +186,11 @@ func _on_pick_weapon(wid: String) -> void:
 	GameState.save_game()
 	_build.call_deferred()
 
+func _on_cycle_job(id: int) -> void:
+	GameState.cycle_job(id)          # idle -> cook -> tinker -> idle
+	GameState.save_game()
+	_build.call_deferred()
+
 func _on_forage() -> void:
 	GameState.forage_night()         # +food, ages pups, night advances — no risk
 	GameState.loadout = ""           # a brand new morning
@@ -199,7 +208,7 @@ func _breed_hint() -> String:
 	if GameState.can_breed():
 		return "Breeds a pup into a free mud-hole. It can raid once it grows up."
 	if GameState.living().size() >= GameState.huts:
-		return "No free mud-holes — dig one first (needs shinies from a raid)."
+		return "No free mud-holes — dig one first (needs scrap; set a Tinker)."
 	return "Not enough food — forage tonight for more."
 
 func _night_hint(can_raid: bool) -> String:
@@ -225,6 +234,26 @@ func _trait_tag(g: Dictionary) -> String:
 	if t != "" and GameState.TRAITS.has(t):
 		return " {%s}" % GameState.TRAITS[t].name
 	return ""
+
+## The job-toggle button's text + tint for an adult (#12). Cook brings food,
+## Tinker scavenges scrap (which digs holes), Idle does nowt.
+func _job_label(g: Dictionary) -> String:
+	match String(g.get("job", GameState.JOB_IDLE)):
+		GameState.JOB_COOK:
+			return "[Cook +%d food]" % GameState.COOK_FOOD
+		GameState.JOB_TINKER:
+			return "[Tinker +%d scrap]" % GameState.TINKER_SCRAP
+		_:
+			return "[Idle — tap]"
+
+func _job_tint(g: Dictionary) -> Color:
+	match String(g.get("job", GameState.JOB_IDLE)):
+		GameState.JOB_COOK:
+			return Color(0.7, 1.0, 0.7)
+		GameState.JOB_TINKER:
+			return Color(0.7, 0.85, 1.0)
+		_:
+			return Color(1, 1, 1, 0.6)
 
 func _lbl(text: String, pos: Vector2, size := 14, col := Color.WHITE) -> Label:
 	var l := Label.new()

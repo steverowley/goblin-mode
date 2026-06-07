@@ -32,9 +32,21 @@ const STAGE_PUP := "pup"
 const STAGE_ADULT := "adult"
 const START_HUTS := 4          # mud-holes = population cap (pups included)
 const START_FOOD := 6
+const START_SCRAP := 0
 const BREED_FOOD := 4          # food to breed one pup
-const DIG_SHINIES := 8         # shinies to dig a new mud-hole (+1 capacity)
+const DIG_SCRAP := 5           # SCRAP to dig a new mud-hole (+1 capacity) — tinkers make scrap
 const RAID_FOOD := 5           # grub nicked from a farm on a successful raid (raids are the larder)
+
+## Jobs (#12). Idle stay-home adults can WORK overnight: a Cook brings in food, a
+## Tinker scavenges scrap (which digs mud-holes). The raider who's out tonight
+## can't also work. Goblins also EAT each night — go hungry and unrest rises.
+const JOB_IDLE := "idle"
+const JOB_COOK := "cook"
+const JOB_TINKER := "tinker"
+const JOB_CYCLE := [JOB_IDLE, JOB_COOK, JOB_TINKER]   # order the Den button cycles through
+const COOK_FOOD := 2           # food a Cook brings in per night
+const TINKER_SCRAP := 2        # scrap a Tinker scavenges per night
+const FOOD_PER_GOBLIN := 1     # food each living goblin eats per night (starvation -> unrest)
 
 ## Goblin stats (Bite 2a). Each 1..STAT_MAX. Health = hits survived on a raid;
 ## Sneak = quieter; Brawn = lugs loot with less drag. Starters skew LOW health so
@@ -104,7 +116,7 @@ func new_game() -> void:
 		_make_goblin("Grubba", STAGE_ADULT, {"health": 2, "sneak": 1, "brawn": 4}),  # loud bruiser
 		_make_goblin("Wort", STAGE_ADULT, {"health": 2, "sneak": 2, "brawn": 2}, "keen"),  # all-rounder, sharp-eyed (shows traits off from night 1)
 	]
-	resources = {"shinies": 0, "food": START_FOOD}
+	resources = {"shinies": 0, "food": START_FOOD, "scrap": START_SCRAP}
 	unlocks = []
 	chosen_target = {"name": "Millfield Cottage", "difficulty": 1}
 	loadout = ""
@@ -207,7 +219,7 @@ func load_game() -> bool:
 	return _apply_dict(data)
 
 func _make_goblin(gname: String, stage: String, stats: Dictionary, trait_id := "") -> Dictionary:
-	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats, "trait": trait_id}
+	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats, "trait": trait_id, "job": JOB_IDLE}
 	_next_id += 1
 	return g
 
@@ -265,14 +277,24 @@ func sent_goblin() -> Dictionary:
 # --- Day actions (instant, repeatable while affordable) -------------------
 
 func can_dig() -> bool:
-	return int(resources.get("shinies", 0)) >= DIG_SHINIES
+	return int(resources.get("scrap", 0)) >= DIG_SCRAP
 
 func dig_hut() -> bool:
 	if not can_dig():
 		return false
-	resources.shinies -= DIG_SHINIES
+	resources.scrap = int(resources.get("scrap", 0)) - DIG_SCRAP
 	huts += 1
 	return true
+
+## Cycle a goblin's overnight job (idle -> cook -> tinker -> idle). The Den drives
+## this; the raider's job is skipped the night it's out raiding.
+func cycle_job(id: int) -> void:
+	var g := goblin_by_id(id)
+	if g.is_empty():
+		return
+	var cur := String(g.get("job", JOB_IDLE))
+	var i: int = JOB_CYCLE.find(cur)
+	g.job = JOB_CYCLE[(i + 1) % JOB_CYCLE.size()]
 
 func can_breed() -> bool:
 	return living().size() < huts and int(resources.get("food", 0)) >= BREED_FOOD
@@ -370,6 +392,7 @@ func _forage_roll() -> int:
 ## its name + best feat go on the wall of the dead.
 func resolve_raid(result: Dictionary) -> void:
 	var g := sent_goblin()
+	var rid: int = int(g.id) if not g.is_empty() else -1
 	var who: String = String(g.name) if not g.is_empty() else "The goblin"
 	if String(result.get("outcome", "lost")) == "won":
 		var loot := int(result.get("loot", 0))
@@ -387,32 +410,71 @@ func resolve_raid(result: Dictionary) -> void:
 	last_raid = result
 	clear_sent()
 	loadout = ""
-	advance_night()
+	advance_night(rid)
 
 ## Tick to the next morning: pups grow into adults, the night advances, and the
 ## anti-softlock backstop guarantees you're never wiped out — if every goblin is
 ## dead, a free runt wanders in.
-func advance_night() -> void:
+func advance_night(raider_id := -1) -> void:
 	night += 1
 	just_collapsed = false
+
+	# Jobs (#12): stay-home adults work overnight. The raider's out tonight, so it
+	# doesn't pull a shift — pups can't work yet (they grow up below).
+	var prod_food := 0
+	var prod_scrap := 0
+	for g in roster:
+		if g.alive and g.stage == STAGE_ADULT and g.id != raider_id:
+			match String(g.get("job", JOB_IDLE)):
+				JOB_COOK:
+					prod_food += COOK_FOOD
+				JOB_TINKER:
+					prod_scrap += TINKER_SCRAP
+	resources.food = int(resources.get("food", 0)) + prod_food
+	resources.scrap = int(resources.get("scrap", 0)) + prod_scrap
+
 	# Pups grow up.
 	for g in roster:
 		if g.alive and g.stage == STAGE_PUP:
 			g.stage = STAGE_ADULT
-	# Upkeep: the warren eats gold; a shortfall breeds unrest, paying it calms things.
+
+	# Compose ONE overnight economy line (workers / hunger / upkeep) for the Den.
+	var report := PackedStringArray()
+	if prod_food > 0 or prod_scrap > 0:
+		var bits := PackedStringArray()
+		if prod_food > 0:
+			bits.append("+%d food" % prod_food)
+		if prod_scrap > 0:
+			bits.append("+%d scrap" % prod_scrap)
+		report.append("Workers: " + ", ".join(bits))
+
+	# The warren EATS (food). A shortfall is hunger -> unrest.
+	var mouths := living().size() * FOOD_PER_GOBLIN
+	var food_have := int(resources.get("food", 0))
+	var ate := mini(food_have, mouths)
+	resources.food = food_have - ate
+	var hungry := mouths - ate
+	if hungry > 0:
+		unrest = mini(UNREST_MAX, unrest + 1)
+		report.append("HUNGRY! short %d food — unrest rising" % hungry)
+
+	# Upkeep (gold): a shortfall breeds unrest AND collapse pressure; paying calms both.
 	var cost := living().size() * UPKEEP_PER_GOBLIN
 	var have := int(resources.get("shinies", 0))
 	resources.shinies = maxi(0, have - cost)
 	if have < cost:
 		unrest = mini(UNREST_MAX, unrest + 1)
-		upkeep_note = "Upkeep %d shinies — couldn't pay it! Unrest rising." % cost
+		report.append("Upkeep %d shinies UNPAID — unrest rising" % cost)
 		collapse_pressure += 1
 	else:
-		if unrest > 0:
-			unrest = maxi(0, unrest - 1)
-		upkeep_note = "Upkeep paid: -%d shinies." % cost
+		report.append("Upkeep -%d shinies" % cost)
 		collapse_pressure = 0
-	# Too many nights unable to pay upkeep -> the warren collapses (run-end; meta carries on).
+		# A fed, paid-up warren settles — but a hungry one won't be soothed by gold.
+		if hungry == 0 and unrest > 0:
+			unrest = maxi(0, unrest - 1)
+	upkeep_note = "  |  ".join(report)
+
+	# Too many broke nights unable to pay gold upkeep -> the warren collapses (run-end; meta carries on).
 	if collapse_pressure >= COLLAPSE_NIGHTS:
 		start_new_run()
 		return
@@ -441,7 +503,7 @@ func start_new_run() -> void:
 		_make_goblin("Grubba", STAGE_ADULT, _recruit_stats(), _roll_trait()),
 		_make_goblin("Wort", STAGE_ADULT, _recruit_stats(), _roll_trait()),
 	]
-	resources = {"shinies": 0, "food": START_FOOD}
+	resources = {"shinies": 0, "food": START_FOOD, "scrap": START_SCRAP}
 	huts = START_HUTS
 	night = 1
 	unrest = 0
