@@ -31,6 +31,8 @@ const RAID_FOOD := 5           # grub nicked from a farm on a successful raid (r
 ## early raids reward stealth — combat-readiness comes from gear/meta later.
 const STAT_MIN := 1
 const STAT_MAX := 4
+const CONCEIVE_CHANCE := 80      # % chance a breeding actually produces a pup
+const MUTATION_CHANCE := 14      # % chance a bred pup mutates one stat to a wild value
 
 ## Warren upkeep + nightly events (#12 economy + Bite-3 stakes groundwork). Each
 ## night gold pays upkeep per living goblin; a shortfall breeds UNREST, and at the
@@ -141,8 +143,56 @@ func breed_pup() -> bool:
 	if not can_breed():
 		return false
 	resources.food -= BREED_FOOD
-	roster.append(_make_goblin(_pup_name(), STAGE_PUP, _random_stats()))
+	# The pair don't always take (the attempt still costs food).
+	if randi() % 100 >= CONCEIVE_CHANCE:
+		last_event = "The breeding pair didn't take this time."
+		return false
+	# Genetics: the pup inherits a BLEND of the two best adults' stats, with a rare
+	# mutation throwing one stat wild.
+	var stats := _breed_stats()
+	var mutated := false
+	if randi() % 100 < MUTATION_CHANCE:
+		mutated = true
+		var keys := ["health", "sneak", "brawn"]
+		var k: String = keys[randi() % keys.size()]
+		stats[k] = randi_range(STAT_MIN, STAT_MAX)
+	var pup := _make_goblin(_pup_name(), STAGE_PUP, stats)
+	pup["mutant"] = mutated
+	roster.append(pup)
+	last_event = "Bred %s! (H%d S%d B%d)%s" % [pup.name, stats.health, stats.sneak, stats.brawn, "  — a MUTATION!" if mutated else ""]
 	return true
+
+## A pup's inherited stats: a blend of the two STRONGEST adults' (your bloodline),
+## with small jitter. Falls back to random stats if there aren't two to breed from.
+func _breed_stats() -> Dictionary:
+	var ad := adults()
+	if ad.size() < 2:
+		return _random_stats()
+	var best: Dictionary = ad[0]
+	var second: Dictionary = ad[1]
+	if _stat_sum(second) > _stat_sum(best):
+		var t := best; best = second; second = t
+	for i in range(2, ad.size()):
+		var g: Dictionary = ad[i]
+		if _stat_sum(g) > _stat_sum(best):
+			second = best
+			best = g
+		elif _stat_sum(g) > _stat_sum(second):
+			second = g
+	return _inherit(best, second)
+
+func _stat_sum(g: Dictionary) -> int:
+	var s: Dictionary = g.get("stats", {})
+	return int(s.get("health", 0)) + int(s.get("sneak", 0)) + int(s.get("brawn", 0))
+
+func _inherit(a: Dictionary, b: Dictionary) -> Dictionary:
+	var sa: Dictionary = a.get("stats", {})
+	var sb: Dictionary = b.get("stats", {})
+	var out := {}
+	for k in ["health", "sneak", "brawn"]:
+		var avg := (int(sa.get(k, 2)) + int(sb.get(k, 2))) / 2.0
+		out[k] = clampi(int(round(avg + randf_range(-0.6, 0.6))), STAT_MIN, STAT_MAX)
+	return out
 
 func set_sent(id: int) -> void:
 	sent_id = id

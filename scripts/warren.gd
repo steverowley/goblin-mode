@@ -84,7 +84,8 @@ func _build_roster() -> void:
 				_on_pick_sent.bind(g.id), false,
 				Color(0.6, 1.0, 0.5) if sent else Color.WHITE)
 		else:
-			_lbl("%s  [%s] (pup — grows up tonight)" % [g.name, _stat_str(g)], Vector2(40, ry + 6), 13, Color(1, 1, 1, 0.5))
+			var mtag: String = "  *MUTANT*" if g.get("mutant", false) else ""
+			_lbl("%s  [%s] (pup — grows up tonight)%s" % [g.name, _stat_str(g), mtag], Vector2(40, ry + 6), 13, Color(1, 0.9, 0.6) if mtag != "" else Color(1, 1, 1, 0.5))
 		ry += 36
 
 	# Wall of the dead — anchored to a fixed lower-left spot, independent of roster size.
