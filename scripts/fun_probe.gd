@@ -24,6 +24,15 @@ const GRAB_R := 20.0
 const SMASH_R := 36.0
 const MELEE_R := 38.0            # reach of a sword swipe (Bite 2.5)
 const STAB_CD := 0.3             # gap between swipes (quick — guard swings are uninterruptible, so no flinch-lock)
+# Ranged weapons (combat v3). Bow = silent sniper (limited arrows); Wand = loud
+# chip+stun (limited charges). Both share the STAB_CD as a fire-rate gate.
+const BOW_AMMO := 5
+const WAND_AMMO := 4
+const ARROW_SPEED := 520.0
+const BOLT_SPEED := 360.0
+const SHOT_LIFE := 1.6           # seconds a projectile flies before fizzling
+const SHOT_HIT_R := 18.0         # how close a shot must pass to a guard to connect
+const WAND_STUN := 2.0           # seconds a bolt freezes a guard
 const SWIPE_HALF := deg_to_rad(20.0)   # half-angle of the goblin's narrow stab
 const SWIPE_TIME := 0.14         # how long the stab thrust is drawn
 const PLAYER_START := Vector2(80, 470)
@@ -82,6 +91,12 @@ var _trait_id := ""                  # the sent goblin's trait id ("" = none)
 var _loot_bonus := 0                 # Lucky trait: +value on every shiny grabbed
 var _cone_len := CONE_LEN            # vision reach (Keen widens it)
 var _cone_half := CONE_HALF          # vision half-angle (Keen widens it)
+
+# --- Weapon (combat v3). Knife (default) = the original melee stab; standalone
+# always plays as knife so the base Fun Probe is unchanged. ---
+var _weapon := GameState.WEAPON_KNIFE
+var _ammo := 0                       # arrows / bolts left (knife ignores this)
+var _shots: Array = []               # in-flight projectiles: {pos, dir, speed, life, kind}
 
 var _player: GoblinScript
 var _guards: Array = []       # the tall-folk on patrol (noise routed to all)
@@ -272,6 +287,13 @@ func _apply_loadout() -> void:
 			_kit_lockpicks = true
 		GameState.KIT_STINK:
 			_stink_charges = 1
+	# Weapon (combat v3) — read for every raid (standalone defaults to knife).
+	_weapon = GameState.weapon
+	match _weapon:
+		GameState.WEAPON_BOW:
+			_ammo = BOW_AMMO
+		GameState.WEAPON_WAND:
+			_ammo = WAND_AMMO
 	var sent := GameState.sent_goblin()
 	if not sent.is_empty():
 		_sent_name = String(sent.name)
@@ -313,6 +335,7 @@ func _physics_process(delta: float) -> void:
 	_iframe_t = maxf(0.0, _iframe_t - delta)
 	_stab_cd = maxf(0.0, _stab_cd - delta)
 	_swipe_t = maxf(0.0, _swipe_t - delta)
+	_update_shots(delta)
 
 	# Lit by any still-burning lantern with a CLEAR line to the goblin — duck
 	# behind a wall and that light no longer reaches you (you're in shadow, hidden).
@@ -381,10 +404,10 @@ func _process(delta: float) -> void:
 		_fog.queue_redraw()
 
 func _input(event: InputEvent) -> void:
-	# Strike (LMB) — a melee stealth takedown on an unaware guard.
+	# Strike (LMB) — knife stabs, bow looses an arrow, wand bolts (by weapon).
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		if _state == "play":
-			_try_takedown()
+			_attack()
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
 		if _state == "play":
@@ -631,6 +654,83 @@ func _try_takedown() -> void:
 		_emit_noise(_player.global_position, 0.5)   # a scuffle — nearby guards may come looking
 		_player.add_chaos(0.06)
 
+## LMB dispatch by carried weapon (combat v3). Knife = the melee stab; bow/wand
+## loose a projectile toward where you're aiming.
+func _attack() -> void:
+	match _weapon:
+		GameState.WEAPON_BOW:
+			_fire_shot("arrow")
+		GameState.WEAPON_WAND:
+			_fire_shot("bolt")
+		_:
+			_try_takedown()
+
+## Loose a ranged shot toward the aim. Arrows are SILENT (the bow's whole point —
+## pick a guard off from across a room); bolts crackle (a little noise) but stun.
+## Ammo-gated and on the same cooldown as a stab, so you can't machine-gun it.
+func _fire_shot(kind: String) -> void:
+	if _stab_cd > 0.0:
+		return
+	if _ammo <= 0:
+		_spawn_text(_player.global_position, "*click* — out of ammo!", Color(1, 0.5, 0.5))
+		_stab_cd = STAB_CD
+		return
+	_ammo -= 1
+	_stab_cd = STAB_CD
+	var dir: Vector2 = _player.facing
+	var speed := ARROW_SPEED if kind == "arrow" else BOLT_SPEED
+	_shots.append({"pos": _player.global_position + dir * 12.0, "dir": dir, "speed": speed, "life": SHOT_LIFE, "kind": kind})
+	if kind == "bolt":
+		_emit_noise(_player.global_position, 0.3)   # magic crackles — not silent
+		_player.add_chaos(0.04)
+
+## Step every in-flight projectile: travel, fizzle on a wall, or connect with a
+## guard. Cheap data dicts (matching the loot/floater style) — no extra nodes.
+func _update_shots(delta: float) -> void:
+	if _shots.is_empty():
+		return
+	var keep: Array = []
+	for s in _shots:
+		var old: Vector2 = s.pos
+		s.life -= delta
+		var np: Vector2 = old + s.dir * s.speed * delta
+		s.pos = np
+		var dead: bool = s.life <= 0.0
+		if not dead and not _clear(old, np):
+			dead = true                       # smacked a wall
+		if not dead:
+			for g in _guards:
+				if g.downed:
+					continue
+				if np.distance_to(g.global_position) < SHOT_HIT_R:
+					_hit_guard_ranged(g, s.kind)
+					dead = true
+					break
+		if not dead:
+			keep.append(s)
+	_shots = keep
+
+## Apply a ranged hit. Arrow: a silent takedown on an unaware guard (the sniper
+## fantasy), else a chip. Bolt: always chips AND stuns (and alerts) — loud crowd
+## control for when you're already spotted.
+func _hit_guard_ranged(g, kind: String) -> void:
+	if kind == "arrow":
+		if g.is_unaware():
+			g.take_down()
+			_spawn_text(g.global_position, "*thunk* — dropped!", Color(0.7, 1.0, 0.4))
+		elif g.take_hit(1):
+			_spawn_text(g.global_position, "DOWNED!", Color(1.0, 0.5, 0.3))
+		else:
+			_spawn_text(g.global_position, "*thunk!*", Color(1.0, 0.8, 0.4))
+		_emit_noise(g.global_position, 0.35)      # the thunk carries a little
+	else:
+		if g.take_hit(1):
+			_spawn_text(g.global_position, "DOWNED!", Color(1.0, 0.5, 0.3))
+		else:
+			g.stun(WAND_STUN)
+			_spawn_text(g.global_position, "*ZAP* — stunned!", Color(0.5, 0.9, 1.0))
+		_emit_noise(g.global_position, 0.45)
+
 func _on_caught(g) -> void:
 	if _state != "play":
 		return
@@ -724,6 +824,11 @@ func _update_info() -> void:
 		lines.append("KIT: *stink cloud active* — slip past while they cough!")
 	elif _stink_charges > 0:
 		lines.append("KIT: stink bomb x%d — press F near a chokepoint to lure the guards." % _stink_charges)
+	# Weapon line (combat v3) — only for ranged kit, so knife/standalone HUD is unchanged.
+	if _weapon == GameState.WEAPON_BOW:
+		lines.append("WEAPON: bow — LMB looses a SILENT arrow (pick 'em off). Arrows: %d" % _ammo)
+	elif _weapon == GameState.WEAPON_WAND:
+		lines.append("WEAPON: wand — LMB bolts a guard (chip + STUN, but loud). Charges: %d" % _ammo)
 	if _sent_name != "":
 		var trait_bit := ""
 		if _trait_id != "" and GameState.TRAITS.has(_trait_id):
@@ -795,6 +900,14 @@ func _draw_overlay(cv: CanvasItem) -> void:
 		var base := _player.global_position + sd * 6.0
 		var perp := Vector2(-sd.y, sd.x) * 5.0
 		cv.draw_colored_polygon(PackedVector2Array([base - perp, base + perp, tip]), Color(0.95, 0.98, 1.0, 0.95 * salpha))
+	# Projectiles (combat v3) — arrows streak, bolts glow. Above the fog so they read.
+	for s in _shots:
+		if s.kind == "arrow":
+			cv.draw_line(s.pos - s.dir * 11.0, s.pos, Color(0.95, 0.9, 0.6), 2.0)
+			cv.draw_circle(s.pos, 2.0, Color(1, 1, 0.85))
+		else:
+			cv.draw_circle(s.pos, 5.5, Color(0.45, 0.8, 1.0, 0.45))
+			cv.draw_circle(s.pos, 2.6, Color(0.85, 0.95, 1.0))
 	# Stink cloud (issue #8) — a green pall, kept bright above the fog, that lures guards in.
 	if _stink_t > 0.0:
 		var sa: float = clampf(_stink_t / STINK_TIME, 0.0, 1.0)

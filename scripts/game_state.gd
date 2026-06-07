@@ -15,6 +15,15 @@ const SAVE_PATH := "user://goblin_save.json"
 const KIT_LOCKPICKS := "lockpicks"
 const KIT_STINK := "stink"
 
+## The weapon the goblin carries on the raid (combat v3). Knife = the original
+## melee stab (unlimited), Bow = a silent ranged pick-off (limited arrows), Wand =
+## a noisy magic bolt that chips AND stuns (limited charges). Unlike the kit, the
+## weapon persists across mornings (it's gear, not a one-night consumable). Default
+## Knife keeps the standalone Fun Probe byte-identical.
+const WEAPON_KNIFE := "knife"
+const WEAPON_BOW := "bow"
+const WEAPON_WAND := "wand"
+
 ## Lives-loop tuning (issue #9 + the food/housing breeding loop). Plain numbers,
 ## easy to retune on feel. Goblins are lives: you send one adult on the raid, and
 ## losing it is permanent. New goblins are bred from FOOD into a free mud-HOLE,
@@ -61,6 +70,7 @@ var resources: Dictionary = {}      # {"shinies": int, "food": int}
 var unlocks: Array = []             # unlocked things, as string ids
 var chosen_target: Dictionary = {}  # the raid the player picked for tonight
 var loadout := ""                   # this morning's packed kit (KIT_* or "")
+var weapon := WEAPON_KNIFE           # the carried weapon (WEAPON_*); persists across mornings
 var huts := START_HUTS              # housing capacity = max LIVING goblins
 var night := 1                      # which night the warren is on
 var sent_id := -1                   # id of the goblin sent on tonight's raid (-1 = none chosen)
@@ -98,6 +108,7 @@ func new_game() -> void:
 	unlocks = []
 	chosen_target = {"name": "Millfield Cottage", "difficulty": 1}
 	loadout = ""
+	weapon = WEAPON_KNIFE
 	huts = START_HUTS
 	night = 1
 	sent_id = -1
@@ -118,7 +129,7 @@ func _save_dict() -> Dictionary:
 	return {
 		"schema_version": SCHEMA_VERSION,
 		"roster": roster, "resources": resources, "unlocks": unlocks,
-		"chosen_target": chosen_target, "loadout": loadout, "huts": huts, "night": night,
+		"chosen_target": chosen_target, "loadout": loadout, "weapon": weapon, "huts": huts, "night": night,
 		"sent_id": sent_id, "fallen": fallen, "last_raid": last_raid, "last_event": last_event,
 		"unrest": unrest, "night_event": night_event, "upkeep_note": upkeep_note,
 		"legacy": legacy, "collapse_pressure": collapse_pressure,
@@ -147,6 +158,7 @@ func _apply_dict(data: Dictionary) -> bool:
 	unlocks = data.get("unlocks", [])
 	chosen_target = data.get("chosen_target", {})
 	loadout = String(data.get("loadout", ""))
+	weapon = String(data.get("weapon", WEAPON_KNIFE))
 	huts = int(data.get("huts", START_HUTS))
 	night = int(data.get("night", 1))
 	sent_id = int(data.get("sent_id", -1))

@@ -56,6 +56,8 @@ var investigating := false
 var searching := false
 var downed := false              # stealth-taken-down — inert for the rest of the raid
 var winding := false             # mid telegraphed wind-up (open brawl)
+var stunned := false             # frozen by a magic bolt — inert until it wears off
+var _stun_t := 0.0
 var _windup_t := 0.0
 var _strike_cd := 0.0
 var _swing_dir := 0.0            # committed swing direction (angle), locked in at wind-up start
@@ -113,6 +115,17 @@ func shake_off() -> void:
 	state = State.SEARCH
 	_search_t = SEARCH_TIME
 	suspicion = 0.9
+
+## Magic bolt (combat v3): freeze the guard in place for a beat. It can't sense,
+## chase, or swing while stunned — a window to reposition or finish it. (The bolt's
+## chip + alert is applied separately via take_hit, so it wakes up already on you.)
+func stun(t: float) -> void:
+	if downed:
+		return
+	_stun_t = maxf(_stun_t, t)
+	stunned = true
+	winding = false
+	velocity = Vector2.ZERO
 
 ## Stealth takedown (Bite 2.5): the goblin dropped this guard. It's out of the
 ## raid — inert, blind, and harmless.
@@ -180,6 +193,14 @@ func _attack_step(delta: float) -> void:
 
 func _physics_process(delta: float) -> void:
 	if downed:
+		return
+	# Stunned by a bolt — frozen solid (no senses, no swing) until it wears off.
+	if _stun_t > 0.0:
+		_stun_t -= delta
+		stunned = _stun_t > 0.0
+		velocity = Vector2.ZERO
+		move_and_slide()
+		queue_redraw()
 		return
 	_seen = _can_see_player()
 	if _seen and _player != null:
@@ -425,6 +446,12 @@ func _draw() -> void:
 	draw_rect(Rect2(-16, -16, 32, 32), bcol)
 	draw_rect(Rect2(-16, -16, 32, 32), bcol.darkened(0.45), false, 2.0)
 	draw_line(Vector2.ZERO, facing * 22.0, Color.WHITE, 2.0)
+
+	# Stunned — little blue sparks spinning overhead.
+	if stunned:
+		for i in range(3):
+			var a := TAU * (float(i) / 3.0) + facing.angle()
+			draw_circle(Vector2(cos(a), sin(a)) * 11.0 + Vector2(0, -2), 2.2, Color(0.5, 0.9, 1.0))
 
 	# State pip: red chase, sky-blue search, orange investigate, amber niggle.
 	if state == State.CHASE:

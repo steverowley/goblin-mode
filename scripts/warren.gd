@@ -18,11 +18,28 @@ signal go_raid
 const KITS := {
 	GameState.KIT_LOCKPICKS: {
 		"label": "Lockpicks",
-		"blurb": "Pick the gate open -> a quiet\n2nd way out (no Goblin Mode).",
+		"blurb": "Lockpicks — pick the gate for a quiet 2nd way out (carry loot through it).",
 	},
 	GameState.KIT_STINK: {
 		"label": "Stink bomb",
-		"blurb": "One F-throw lures the guards off\na chokepoint so you slip past.",
+		"blurb": "Stink bomb — one F-throw lures guards off a chokepoint so you slip past.",
+	},
+}
+
+## The weapons on offer (combat v3). Keys MUST match GameState.WEAPON_* — the raid
+## reads GameState.weapon back. The blurb is the one-line pitch shown in the Den.
+const WEAPONS := {
+	GameState.WEAPON_KNIFE: {
+		"label": "Knife",
+		"blurb": "Knife — silent melee stab, unlimited. Sneak right up. (default)",
+	},
+	GameState.WEAPON_BOW: {
+		"label": "Bow",
+		"blurb": "Bow — silent arrows, pick guards off from range. Only 5 shots.",
+	},
+	GameState.WEAPON_WAND: {
+		"label": "Wand",
+		"blurb": "Wand — bolt chips + STUNS a guard, but it's loud. 4 charges.",
 	},
 }
 
@@ -104,28 +121,40 @@ func _build_roster() -> void:
 func _build_actions() -> void:
 	# Build actions (instant, repeatable while affordable).
 	_lbl("Build (anytime):", Vector2(470, 54), 14)
-	_btn("Dig a mud-hole   (%d shinies)" % GameState.DIG_SHINIES, Vector2(470, 80), Vector2(260, 32), _on_dig, not GameState.can_dig())
-	_btn("Breed a pup   (%d food)" % GameState.BREED_FOOD, Vector2(470, 118), Vector2(260, 32), _on_breed, not GameState.can_breed())
-	_lbl(_breed_hint(), Vector2(470, 156), 12, Color(1, 1, 1, 0.55))
+	_btn("Dig a mud-hole   (%d shinies)" % GameState.DIG_SHINIES, Vector2(470, 80), Vector2(260, 30), _on_dig, not GameState.can_dig())
+	_btn("Breed a pup   (%d food)" % GameState.BREED_FOOD, Vector2(470, 114), Vector2(260, 30), _on_breed, not GameState.can_breed())
+	_lbl(_breed_hint(), Vector2(470, 148), 12, Color(1, 1, 1, 0.55))
 
-	# The forced kit choice (issue #8).
-	_lbl("Tonight — pack a kit:", Vector2(470, 198), 14)
-	var ky := 222
+	# Forced kit choice (issue #8) — two options side by side, locks in for the night.
+	_lbl("Pack a kit tonight:", Vector2(470, 180), 14)
+	var kx := 470
 	for kit_id in KITS:
 		var info: Dictionary = KITS[kit_id]
 		var chosen: bool = (GameState.loadout == kit_id)
 		var locked: bool = (GameState.loadout != "")
-		_btn(info.label + ("  (PACKED)" if chosen else ""), Vector2(470, ky), Vector2(260, 32),
+		_btn(info.label + ("  *" if chosen else ""), Vector2(kx, 204), Vector2(128, 30),
 			_on_pick_kit.bind(kit_id), locked,
 			Color(0.6, 1.0, 0.5) if chosen else (Color(1, 1, 1, 0.4) if locked else Color.WHITE))
-		_lbl(info.blurb, Vector2(470, ky + 36), 11, Color(1, 1, 1, 0.6))
-		ky += 76
+		kx += 134
+	_lbl(_kit_blurb(), Vector2(470, 238), 11, Color(1, 1, 1, 0.6))
+
+	# Weapon choice (combat v3) — gear, so it persists between raids.
+	_lbl("Weapon (kept between raids):", Vector2(470, 268), 14)
+	var wx := 470
+	for wid in WEAPONS:
+		var winfo: Dictionary = WEAPONS[wid]
+		var wc: bool = (GameState.weapon == wid)
+		_btn(winfo.label + ("  *" if wc else ""), Vector2(wx, 292), Vector2(120, 30),
+			_on_pick_weapon.bind(wid), false,
+			Color(0.6, 1.0, 0.5) if wc else Color.WHITE)
+		wx += 126
+	_lbl(WEAPONS[GameState.weapon].blurb, Vector2(470, 326), 11, Color(1, 1, 1, 0.6))
 
 	# Night actions: raid (risky) OR forage (safe). One of them spends the night.
 	var can_raid := (not GameState.sent_goblin().is_empty()) and GameState.loadout != ""
-	_btn("Go raid  >", Vector2(470, ky + 10), Vector2(200, 42), func() -> void: go_raid.emit(), not can_raid)
-	_btn("Forage tonight", Vector2(685, ky + 10), Vector2(180, 42), _on_forage, false, Color(0.7, 0.9, 1.0))
-	_lbl(_night_hint(can_raid), Vector2(470, ky + 60), 12, Color(1, 0.85, 0.55))
+	_btn("Go raid  >", Vector2(470, 360), Vector2(200, 42), func() -> void: go_raid.emit(), not can_raid)
+	_btn("Forage tonight", Vector2(685, 360), Vector2(180, 42), _on_forage, false, Color(0.7, 0.9, 1.0))
+	_lbl(_night_hint(can_raid), Vector2(470, 410), 12, Color(1, 0.85, 0.55))
 
 # --- Action handlers (mutate GameState, then rebuild) ---------------------
 
@@ -148,6 +177,11 @@ func _on_pick_kit(kit_id: String) -> void:
 		GameState.loadout = kit_id   # locks the choice for tonight
 	_build.call_deferred()
 
+func _on_pick_weapon(wid: String) -> void:
+	GameState.weapon = wid           # gear — swap freely, persists until changed
+	GameState.save_game()
+	_build.call_deferred()
+
 func _on_forage() -> void:
 	GameState.forage_night()         # +food, ages pups, night advances — no risk
 	GameState.loadout = ""           # a brand new morning
@@ -155,6 +189,11 @@ func _on_forage() -> void:
 	_build.call_deferred()
 
 # --- Hint text ------------------------------------------------------------
+
+func _kit_blurb() -> String:
+	if GameState.loadout != "" and KITS.has(GameState.loadout):
+		return KITS[GameState.loadout].blurb
+	return "Tap a kit to pack it — it locks in for tonight's raid."
 
 func _breed_hint() -> String:
 	if GameState.can_breed():
