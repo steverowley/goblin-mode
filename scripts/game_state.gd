@@ -23,6 +23,10 @@ const KIT_STINK := "stink"
 const WEAPON_KNIFE := "knife"
 const WEAPON_BOW := "bow"
 const WEAPON_WAND := "wand"
+## Weapons are CRAFTED from scrap (the gear-progression curve: stealth early with
+## the free knife, ranged power later once you've tinkered up the scrap). Knife is
+## always owned; once crafted a weapon is kept for good — even across a collapse.
+const WEAPON_COST := {WEAPON_BOW: 8, WEAPON_WAND: 10}
 
 ## Lives-loop tuning (issue #9 + the food/housing breeding loop). Plain numbers,
 ## easy to retune on feel. Goblins are lives: you send one adult on the raid, and
@@ -32,6 +36,7 @@ const STAGE_PUP := "pup"
 const STAGE_ADULT := "adult"
 const START_HUTS := 4          # mud-holes = population cap (pups included)
 const START_FOOD := 6
+const START_SHINIES := 8       # a gold buffer so the opening isn't a forced collapse (balance pass)
 const START_SCRAP := 0
 const BREED_FOOD := 4          # food to breed one pup
 const DIG_SCRAP := 5           # SCRAP to dig a new mud-hole (+1 capacity) — tinkers make scrap
@@ -83,6 +88,7 @@ var unlocks: Array = []             # unlocked things, as string ids
 var chosen_target: Dictionary = {}  # the raid the player picked for tonight
 var loadout := ""                   # this morning's packed kit (KIT_* or "")
 var weapon := WEAPON_KNIFE           # the carried weapon (WEAPON_*); persists across mornings
+var owned_weapons: Array = [WEAPON_KNIFE]   # weapons crafted so far (meta gear — kept across collapse)
 var huts := START_HUTS              # housing capacity = max LIVING goblins
 var night := 1                      # which night the warren is on
 var sent_id := -1                   # id of the goblin sent on tonight's raid (-1 = none chosen)
@@ -116,11 +122,12 @@ func new_game() -> void:
 		_make_goblin("Grubba", STAGE_ADULT, {"health": 2, "sneak": 1, "brawn": 4}),  # loud bruiser
 		_make_goblin("Wort", STAGE_ADULT, {"health": 2, "sneak": 2, "brawn": 2}, "keen"),  # all-rounder, sharp-eyed (shows traits off from night 1)
 	]
-	resources = {"shinies": 0, "food": START_FOOD, "scrap": START_SCRAP}
+	resources = {"shinies": START_SHINIES, "food": START_FOOD, "scrap": START_SCRAP}
 	unlocks = []
 	chosen_target = {"name": "Millfield Cottage", "difficulty": 1}
 	loadout = ""
 	weapon = WEAPON_KNIFE
+	owned_weapons = [WEAPON_KNIFE]
 	huts = START_HUTS
 	night = 1
 	sent_id = -1
@@ -141,7 +148,7 @@ func _save_dict() -> Dictionary:
 	return {
 		"schema_version": SCHEMA_VERSION,
 		"roster": roster, "resources": resources, "unlocks": unlocks,
-		"chosen_target": chosen_target, "loadout": loadout, "weapon": weapon, "huts": huts, "night": night,
+		"chosen_target": chosen_target, "loadout": loadout, "weapon": weapon, "owned_weapons": owned_weapons, "huts": huts, "night": night,
 		"sent_id": sent_id, "fallen": fallen, "last_raid": last_raid, "last_event": last_event,
 		"unrest": unrest, "night_event": night_event, "upkeep_note": upkeep_note,
 		"legacy": legacy, "collapse_pressure": collapse_pressure,
@@ -161,6 +168,8 @@ func _apply_dict(data: Dictionary) -> bool:
 		return false
 	if typeof(data.get("unlocks", [])) != TYPE_ARRAY:
 		return false
+	if typeof(data.get("owned_weapons", [])) != TYPE_ARRAY:
+		return false
 	if typeof(data.get("chosen_target", {})) != TYPE_DICTIONARY:
 		return false
 	if typeof(data.get("last_raid", {})) != TYPE_DICTIONARY:
@@ -171,6 +180,7 @@ func _apply_dict(data: Dictionary) -> bool:
 	chosen_target = data.get("chosen_target", {})
 	loadout = String(data.get("loadout", ""))
 	weapon = String(data.get("weapon", WEAPON_KNIFE))
+	owned_weapons = data.get("owned_weapons", [WEAPON_KNIFE])
 	huts = int(data.get("huts", START_HUTS))
 	night = int(data.get("night", 1))
 	sent_id = int(data.get("sent_id", -1))
@@ -284,6 +294,24 @@ func dig_hut() -> bool:
 		return false
 	resources.scrap = int(resources.get("scrap", 0)) - DIG_SCRAP
 	huts += 1
+	return true
+
+## --- Weapon crafting (gear progression). Knife is free/always owned; bow & wand
+## are crafted from scrap and then kept for good (across collapse). ---
+func weapon_cost(wid: String) -> int:
+	return int(WEAPON_COST.get(wid, 0))
+
+func owns_weapon(wid: String) -> bool:
+	return wid == WEAPON_KNIFE or wid in owned_weapons
+
+func can_unlock_weapon(wid: String) -> bool:
+	return not owns_weapon(wid) and int(resources.get("scrap", 0)) >= weapon_cost(wid)
+
+func unlock_weapon(wid: String) -> bool:
+	if not can_unlock_weapon(wid):
+		return false
+	resources.scrap = int(resources.get("scrap", 0)) - weapon_cost(wid)
+	owned_weapons.append(wid)
 	return true
 
 ## Cycle a goblin's overnight job (idle -> cook -> tinker -> idle). The Den drives
@@ -458,20 +486,28 @@ func advance_night(raider_id := -1) -> void:
 		unrest = mini(UNREST_MAX, unrest + 1)
 		report.append("HUNGRY! short %d food — unrest rising" % hungry)
 
-	# Upkeep (gold): a shortfall breeds unrest AND collapse pressure; paying calms both.
+	# Upkeep (gold). Pay what you can; only a DESTITUTE night (couldn't pay a single
+	# shiny) builds collapse pressure, so a won or part-paid night treads water — it's
+	# rock-bottom destitution for COLLAPSE_NIGHTS running that ends a run, not merely
+	# being a bit short (balance pass — fixes the night-4 force-collapse).
 	var cost := living().size() * UPKEEP_PER_GOBLIN
 	var have := int(resources.get("shinies", 0))
-	resources.shinies = maxi(0, have - cost)
-	if have < cost:
-		unrest = mini(UNREST_MAX, unrest + 1)
-		report.append("Upkeep %d shinies UNPAID — unrest rising" % cost)
-		collapse_pressure += 1
-	else:
-		report.append("Upkeep -%d shinies" % cost)
+	var paid := mini(have, cost)
+	resources.shinies = have - paid
+	if paid >= cost:
 		collapse_pressure = 0
+		report.append("Upkeep paid: -%d shinies" % cost)
 		# A fed, paid-up warren settles — but a hungry one won't be soothed by gold.
 		if hungry == 0 and unrest > 0:
 			unrest = maxi(0, unrest - 1)
+	elif paid > 0:
+		collapse_pressure = 0           # part-paid still keeps the lid on the riot
+		unrest = mini(UNREST_MAX, unrest + 1)
+		report.append("Upkeep part-paid: -%d of %d shinies — grumbling" % [paid, cost])
+	else:
+		unrest = mini(UNREST_MAX, unrest + 1)
+		collapse_pressure += 1
+		report.append("Upkeep %d shinies — NOTHING in the pot! Unrest rising" % cost)
 	upkeep_note = "  |  ".join(report)
 
 	# Too many broke nights unable to pay gold upkeep -> the warren collapses (run-end; meta carries on).
@@ -503,7 +539,7 @@ func start_new_run() -> void:
 		_make_goblin("Grubba", STAGE_ADULT, _recruit_stats(), _roll_trait()),
 		_make_goblin("Wort", STAGE_ADULT, _recruit_stats(), _roll_trait()),
 	]
-	resources = {"shinies": 0, "food": START_FOOD, "scrap": START_SCRAP}
+	resources = {"shinies": START_SHINIES, "food": START_FOOD, "scrap": START_SCRAP}
 	huts = START_HUTS
 	night = 1
 	unrest = 0

@@ -35,11 +35,11 @@ const WEAPONS := {
 	},
 	GameState.WEAPON_BOW: {
 		"label": "Bow",
-		"blurb": "Bow — silent arrows, pick guards off from range. Only 5 shots.",
+		"blurb": "Bow — silent arrows, pick guards off from range. Only 3 shots.",
 	},
 	GameState.WEAPON_WAND: {
 		"label": "Wand",
-		"blurb": "Wand — bolt chips + STUNS a guard, but it's loud. 4 charges.",
+		"blurb": "Wand — bolt chips + STUNS a guard, but it's loud. 3 charges.",
 	},
 }
 
@@ -142,15 +142,28 @@ func _build_actions() -> void:
 		kx += 134
 	_lbl(_kit_blurb(), Vector2(470, 238), 11, Color(1, 1, 1, 0.6))
 
-	# Weapon choice (combat v3) — gear, so it persists between raids.
-	_lbl("Weapon (kept between raids):", Vector2(470, 268), 14)
+	# Weapon choice (combat v3) — craft ranged gear from scrap, then it's yours for good.
+	_lbl("Weapon (craft from scrap — kept for good):", Vector2(470, 268), 13)
 	var wx := 470
 	for wid in WEAPONS:
 		var winfo: Dictionary = WEAPONS[wid]
-		var wc: bool = (GameState.weapon == wid)
-		_btn(winfo.label + ("  *" if wc else ""), Vector2(wx, 292), Vector2(120, 30),
-			_on_pick_weapon.bind(wid), false,
-			Color(0.6, 1.0, 0.5) if wc else Color.WHITE)
+		var owned: bool = GameState.owns_weapon(wid)
+		var cur: bool = (GameState.weapon == wid)
+		var wlabel: String = winfo.label
+		var wdis := false
+		var wtint := Color.WHITE
+		if owned:
+			if cur:
+				wlabel += "  *"
+				wtint = Color(0.6, 1.0, 0.5)
+		else:
+			wlabel += "  (%dsc)" % GameState.weapon_cost(wid)
+			if GameState.can_unlock_weapon(wid):
+				wtint = Color(1.0, 0.9, 0.5)        # affordable craft — gold
+			else:
+				wdis = true                          # can't afford yet — tinker for scrap
+				wtint = Color(1, 1, 1, 0.35)
+		_btn(wlabel, Vector2(wx, 292), Vector2(120, 30), _on_pick_weapon.bind(wid), wdis, wtint)
 		wx += 126
 	_lbl(WEAPONS[GameState.weapon].blurb, Vector2(470, 326), 11, Color(1, 1, 1, 0.6))
 
@@ -182,7 +195,12 @@ func _on_pick_kit(kit_id: String) -> void:
 	_build.call_deferred()
 
 func _on_pick_weapon(wid: String) -> void:
-	GameState.weapon = wid           # gear — swap freely, persists until changed
+	# Owned -> just equip it. Locked but affordable -> craft it (spends scrap) and equip.
+	if GameState.owns_weapon(wid):
+		GameState.weapon = wid
+	elif GameState.can_unlock_weapon(wid):
+		GameState.unlock_weapon(wid)
+		GameState.weapon = wid
 	GameState.save_game()
 	_build.call_deferred()
 

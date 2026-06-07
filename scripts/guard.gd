@@ -40,6 +40,7 @@ const STRIKE_R := 30.0           # reach of a guard's telegraphed melee swing
 const WINDUP_TIME := 0.28        # the tell — it rears back this long before the blow lands (dodge it!)
 const STRIKE_CD := 0.4           # minimum gap between swings (aggressive)
 const SWING_HALF := deg_to_rad(55.0)   # half-angle of a guard's wide swing arc (dodge out of it sideways)
+const STUN_IMMUNE := 3.0         # after a stun wears off, can't be re-stunned for this long (no perma-lock)
 
 const GoblinScript := preload("res://scripts/player.gd")
 
@@ -58,6 +59,7 @@ var downed := false              # stealth-taken-down — inert for the rest of 
 var winding := false             # mid telegraphed wind-up (open brawl)
 var stunned := false             # frozen by a magic bolt — inert until it wears off
 var _stun_t := 0.0
+var _stun_immune_t := 0.0        # brief post-stun immunity so a guard can't be perma-frozen
 var _windup_t := 0.0
 var _strike_cd := 0.0
 var _swing_dir := 0.0            # committed swing direction (angle), locked in at wind-up start
@@ -120,9 +122,12 @@ func shake_off() -> void:
 ## chase, or swing while stunned — a window to reposition or finish it. (The bolt's
 ## chip + alert is applied separately via take_hit, so it wakes up already on you.)
 func stun(t: float) -> void:
-	if downed:
+	# Refuse while already stunned OR briefly immune afterwards — so rapid re-bolting
+	# can't refresh the freeze into a perma-lock. The bolt's chip still lands (it's
+	# applied separately via take_hit), so the wand stays useful, just not abusable.
+	if downed or _stun_t > 0.0 or _stun_immune_t > 0.0:
 		return
-	_stun_t = maxf(_stun_t, t)
+	_stun_t = t
 	stunned = true
 	winding = false
 	velocity = Vector2.ZERO
@@ -194,10 +199,14 @@ func _attack_step(delta: float) -> void:
 func _physics_process(delta: float) -> void:
 	if downed:
 		return
-	# Stunned by a bolt — frozen solid (no senses, no swing) until it wears off.
+	_stun_immune_t = maxf(0.0, _stun_immune_t - delta)
+	# Stunned by a bolt — frozen solid (no senses, no swing) until it wears off, then
+	# briefly stun-immune so it can't be perma-locked (balance pass).
 	if _stun_t > 0.0:
 		_stun_t -= delta
-		stunned = _stun_t > 0.0
+		if _stun_t <= 0.0:
+			stunned = false
+			_stun_immune_t = STUN_IMMUNE
 		velocity = Vector2.ZERO
 		move_and_slide()
 		queue_redraw()

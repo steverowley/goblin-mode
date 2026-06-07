@@ -26,13 +26,13 @@ const MELEE_R := 38.0            # reach of a sword swipe (Bite 2.5)
 const STAB_CD := 0.3             # gap between swipes (quick — guard swings are uninterruptible, so no flinch-lock)
 # Ranged weapons (combat v3). Bow = silent sniper (limited arrows); Wand = loud
 # chip+stun (limited charges). Both share the STAB_CD as a fire-rate gate.
-const BOW_AMMO := 5
-const WAND_AMMO := 4
+const BOW_AMMO := 3              # a few precious silent shots (balance pass — was 5)
+const WAND_AMMO := 3            # can't one-burst the 4-hp brute (balance pass — was 4)
 const ARROW_SPEED := 520.0
 const BOLT_SPEED := 360.0
 const SHOT_LIFE := 1.6           # seconds a projectile flies before fizzling
 const SHOT_HIT_R := 18.0         # how close a shot must pass to a guard to connect
-const WAND_STUN := 2.0           # seconds a bolt freezes a guard
+const WAND_STUN := 1.2           # seconds a bolt freezes a guard (balance pass — was 2.0)
 const SWIPE_HALF := deg_to_rad(20.0)   # half-angle of the goblin's narrow stab
 const SWIPE_TIME := 0.14         # how long the stab thrust is drawn
 const PLAYER_START := Vector2(80, 470)
