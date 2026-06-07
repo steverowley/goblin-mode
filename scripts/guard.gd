@@ -141,11 +141,11 @@ func take_hit(dmg: int) -> bool:
 	alerted = true
 	return false
 
-## Genuinely off-guard — not chasing, not searching for you after losing sight,
-## and not half-alerted — so a stab one-shots it (a stealth takedown). After a
-## chase a guard SEARCHES, so juking it behind a wall no longer earns a free kill.
+## Genuinely off-guard — calmly PATROLLING and hasn't seen OR heard you (low
+## suspicion). Only then does a stab one-shot it. So you must SNEAK (Shift = quiet)
+## up: RUNNING's footsteps raise its suspicion and the stab becomes a mere chip.
 func is_unaware() -> bool:
-	return not downed and state != State.CHASE and state != State.SEARCH and suspicion < 0.85
+	return not downed and state == State.PATROL and suspicion < 0.3
 
 ## Telegraphed melee strike (open brawl). In a chase, once it's in reach it REARS
 ## BACK (a visible tell) then swings — dodge by getting out of reach before it lands.
