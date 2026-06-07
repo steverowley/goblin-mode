@@ -61,6 +61,7 @@ var _kit_lockpicks := false          # the barred gate becomes a quiet 2nd exit 
 var _stink_charges := 0              # one-shot stink bombs in the sack
 var _stink_pos := Vector2.ZERO
 var _stink_t := 0.0                  # remaining stink-cloud time
+var _sent_name := ""                 # the goblin the Den sent (issue #9); "" when launched directly
 
 var _player: GoblinScript
 var _guards: Array = []       # the tall-folk on patrol (noise routed to all)
@@ -249,6 +250,9 @@ func _apply_loadout() -> void:
 			_kit_lockpicks = true
 		GameState.KIT_STINK:
 			_stink_charges = 1
+	var sent := GameState.sent_goblin()
+	if not sent.is_empty():
+		_sent_name = String(sent.name)
 
 func _physics_process(delta: float) -> void:
 	if _state != "play":
@@ -603,6 +607,8 @@ func _update_info() -> void:
 		lines.append("KIT: *stink cloud active* — slip past while they cough!")
 	elif _stink_charges > 0:
 		lines.append("KIT: stink bomb x%d — press F near a chokepoint to lure the guards." % _stink_charges)
+	if _sent_name != "":
+		lines.append("On the line tonight: %s — get 'em home alive." % _sent_name)
 	_info.text = "\n".join(lines)
 
 func _meter(v: float, cells: int) -> String:

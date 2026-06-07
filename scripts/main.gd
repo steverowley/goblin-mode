@@ -77,9 +77,9 @@ func _start_raid(packed: PackedScene) -> void:
 	_hide_loading()
 
 func _on_raid_finished(result: Dictionary) -> void:
-	# Bank the haul into the persistent (data-only) GameState, then slink home.
-	GameState.resources["shinies"] = int(GameState.resources.get("shinies", 0)) + int(result.get("loot", 0))
-	GameState.last_raid = result
+	# Bank the haul or bury the goblin, then tick the night over (issue #9), and
+	# slink back to the (new) morning.
+	GameState.resolve_raid(result)
 	_set_current(null)
 	_enter_warren()
 
