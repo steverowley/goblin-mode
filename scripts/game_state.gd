@@ -35,7 +35,7 @@ const STAT_MAX := 4
 ## Warren upkeep + nightly events (#12 economy + Bite-3 stakes groundwork). Each
 ## night gold pays upkeep per living goblin; a shortfall breeds UNREST, and at the
 ## cap a goblin deserts. (The full run-end collapse waits for meta-progression.)
-const UPKEEP_PER_GOBLIN := 1
+const UPKEEP_PER_GOBLIN := 2
 const UNREST_MAX := 5
 
 var schema_version := SCHEMA_VERSION
@@ -52,6 +52,7 @@ var last_raid: Dictionary = {}      # summary of the most recent raid's outcome
 var last_event := ""                # short "what just happened" line (raid/forage outcome)
 var unrest := 0                     # 0..UNREST_MAX; rises when upkeep goes unpaid
 var night_event := ""               # the random thing that happened in the warren overnight
+var upkeep_note := ""               # last night's upkeep summary (shown in the Den)
 
 var _next_id := 0                   # hands out stable unique goblin ids
 var _pup_n := 0                     # rolls through the pup-name pool
@@ -84,6 +85,7 @@ func new_game() -> void:
 	last_event = ""
 	unrest = 0
 	night_event = ""
+	upkeep_note = ""
 
 func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
 	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
@@ -210,8 +212,11 @@ func advance_night() -> void:
 	resources.shinies = maxi(0, have - cost)
 	if have < cost:
 		unrest = mini(UNREST_MAX, unrest + 1)
-	elif unrest > 0:
-		unrest = maxi(0, unrest - 1)
+		upkeep_note = "Upkeep %d shinies — couldn't pay it! Unrest rising." % cost
+	else:
+		if unrest > 0:
+			unrest = maxi(0, unrest - 1)
+		upkeep_note = "Upkeep paid: -%d shinies." % cost
 	# One thing happens overnight: a desertion if the warren's boiling over, else a
 	# random warren event. Mutually exclusive — you never lose two goblins in a night.
 	if unrest >= UNREST_MAX and living().size() > 1:
