@@ -8,6 +8,7 @@ extends Node
 ## to JSON, it does not belong in here.
 
 const SCHEMA_VERSION := 1
+const SAVE_PATH := "user://goblin_save.json"
 
 ## The morning loadout the Recruitment Den writes (issue #8): the one kit the
 ## player packs for tonight's raid, which the raid reads to change HOW it plays.
@@ -31,12 +32,15 @@ const RAID_FOOD := 5           # grub nicked from a farm on a successful raid (r
 ## early raids reward stealth — combat-readiness comes from gear/meta later.
 const STAT_MIN := 1
 const STAT_MAX := 4
+const CONCEIVE_CHANCE := 80      # % chance a breeding actually produces a pup
+const MUTATION_CHANCE := 14      # % chance a bred pup mutates one stat to a wild value
 
 ## Warren upkeep + nightly events (#12 economy + Bite-3 stakes groundwork). Each
 ## night gold pays upkeep per living goblin; a shortfall breeds UNREST, and at the
 ## cap a goblin deserts. (The full run-end collapse waits for meta-progression.)
 const UPKEEP_PER_GOBLIN := 2
 const UNREST_MAX := 5
+const COLLAPSE_NIGHTS := 3       # consecutive nights at MAX unrest before the warren collapses (run ends)
 
 var schema_version := SCHEMA_VERSION
 var roster: Array = []              # every goblin ever (alive flag marks the living), each a Dictionary
@@ -53,6 +57,9 @@ var last_event := ""                # short "what just happened" line (raid/fora
 var unrest := 0                     # 0..UNREST_MAX; rises when upkeep goes unpaid
 var night_event := ""               # the random thing that happened in the warren overnight
 var upkeep_note := ""               # last night's upkeep summary (shown in the Den)
+var legacy := 0                     # bloodline renown (meta-progression); recruits scale with it
+var collapse_pressure := 0         # consecutive nights at MAX unrest
+var just_collapsed := false        # set the morning a warren falls and rises anew (Bite 3)
 
 var _next_id := 0                   # hands out stable unique goblin ids
 var _pup_n := 0                     # rolls through the pup-name pool
@@ -60,7 +67,8 @@ var _pup_n := 0                     # rolls through the pup-name pool
 const _PUP_NAMES := ["Nib", "Squig", "Gob", "Razza", "Mogg", "Krick", "Dribble", "Snot", "Wretch", "Fang"]
 
 func _ready() -> void:
-	new_game()
+	if not load_game():
+		new_game()
 
 ## Seed a fresh game. (Persisting + loading this — with versioned migration — is
 ## issue #10; for now every launch starts a clean warren.)
@@ -86,6 +94,92 @@ func new_game() -> void:
 	unrest = 0
 	night_event = ""
 	upkeep_note = ""
+	legacy = 0
+	collapse_pressure = 0
+	just_collapsed = false
+
+# --- Save / load (issue #10). GameState is serializable-only by design, so this
+# is a straight JSON dump, versioned for future migration. ----------------------
+
+func _save_dict() -> Dictionary:
+	return {
+		"schema_version": SCHEMA_VERSION,
+		"roster": roster, "resources": resources, "unlocks": unlocks,
+		"chosen_target": chosen_target, "loadout": loadout, "huts": huts, "night": night,
+		"sent_id": sent_id, "fallen": fallen, "last_raid": last_raid, "last_event": last_event,
+		"unrest": unrest, "night_event": night_event, "upkeep_note": upkeep_note,
+		"legacy": legacy, "collapse_pressure": collapse_pressure,
+		"next_id": _next_id, "pup_n": _pup_n,
+	}
+
+func _apply_dict(data: Dictionary) -> bool:
+	if int(data.get("schema_version", -1)) != SCHEMA_VERSION:
+		return false   # incompatible save -> caller starts a new game
+	# Reject a structurally-broken save cleanly, rather than leaning on engine error
+	# recovery when a present-but-wrong-type field would throw on the typed assigns below.
+	if typeof(data.get("roster", [])) != TYPE_ARRAY:
+		return false
+	if typeof(data.get("resources", {})) != TYPE_DICTIONARY:
+		return false
+	if typeof(data.get("fallen", [])) != TYPE_ARRAY:
+		return false
+	if typeof(data.get("unlocks", [])) != TYPE_ARRAY:
+		return false
+	if typeof(data.get("chosen_target", {})) != TYPE_DICTIONARY:
+		return false
+	if typeof(data.get("last_raid", {})) != TYPE_DICTIONARY:
+		return false
+	roster = data.get("roster", [])
+	resources = data.get("resources", {"shinies": 0, "food": START_FOOD})
+	unlocks = data.get("unlocks", [])
+	chosen_target = data.get("chosen_target", {})
+	loadout = String(data.get("loadout", ""))
+	huts = int(data.get("huts", START_HUTS))
+	night = int(data.get("night", 1))
+	sent_id = int(data.get("sent_id", -1))
+	fallen = data.get("fallen", [])
+	last_raid = data.get("last_raid", {})
+	last_event = String(data.get("last_event", ""))
+	unrest = int(data.get("unrest", 0))
+	night_event = String(data.get("night_event", ""))
+	upkeep_note = String(data.get("upkeep_note", ""))
+	legacy = int(data.get("legacy", 0))
+	collapse_pressure = int(data.get("collapse_pressure", 0))
+	_next_id = int(data.get("next_id", roster.size()))
+	_pup_n = int(data.get("pup_n", 0))
+	just_collapsed = false
+	# JSON turns every number into a float — coerce the goblins' ints back.
+	for g in roster:
+		g.id = int(g.get("id", 0))
+		g.best = int(g.get("best", 0))
+		var s: Dictionary = g.get("stats", {})
+		for k in s.keys():
+			s[k] = int(s[k])
+	return true
+
+## Autosave the warren to disk. Skipped under --headless so tests don't clobber a
+## real save.
+func save_game() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	if f != null:
+		f.store_string(JSON.stringify(_save_dict()))
+		f.close()
+
+## Load a saved warren. False (state untouched) if there's no save, it's
+## unreadable, or the schema version mismatches — caller then starts a new game.
+func load_game() -> bool:
+	if not FileAccess.file_exists(SAVE_PATH):
+		return false
+	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
+	if f == null:
+		return false
+	var data = JSON.parse_string(f.get_as_text())
+	f.close()
+	if typeof(data) != TYPE_DICTIONARY:
+		return false
+	return _apply_dict(data)
 
 func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
 	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
@@ -96,6 +190,19 @@ func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary
 ## low for now; genetics (Bite 2b) will replace this with parent inheritance.
 func _random_stats() -> Dictionary:
 	return {"health": randi_range(1, 2), "sneak": randi_range(STAT_MIN, STAT_MAX), "brawn": randi_range(STAT_MIN, STAT_MAX)}
+
+## A fresh recruit's stats (free runt / a stray that joins): random PLUS the
+## warren's accumulated META bonus — so as your legacy grows, recruits arrive
+## tougher (bred pups use genetics instead). This is what carries across a run.
+func _recruit_stats() -> Dictionary:
+	var b := _legacy_bonus()
+	var s := _random_stats()
+	for k in s.keys():
+		s[k] = clampi(int(s[k]) + b, STAT_MIN, STAT_MAX)
+	return s
+
+func _legacy_bonus() -> int:
+	return clampi(legacy / 8, 0, 2)
 
 # --- Queries --------------------------------------------------------------
 
@@ -141,8 +248,56 @@ func breed_pup() -> bool:
 	if not can_breed():
 		return false
 	resources.food -= BREED_FOOD
-	roster.append(_make_goblin(_pup_name(), STAGE_PUP, _random_stats()))
+	# The pair don't always take (the attempt still costs food).
+	if randi() % 100 >= CONCEIVE_CHANCE:
+		last_event = "The breeding pair didn't take this time."
+		return false
+	# Genetics: the pup inherits a BLEND of the two best adults' stats, with a rare
+	# mutation throwing one stat wild.
+	var stats := _breed_stats()
+	var mutated := false
+	if randi() % 100 < MUTATION_CHANCE:
+		mutated = true
+		var keys := ["health", "sneak", "brawn"]
+		var k: String = keys[randi() % keys.size()]
+		stats[k] = randi_range(STAT_MIN, STAT_MAX)
+	var pup := _make_goblin(_pup_name(), STAGE_PUP, stats)
+	pup["mutant"] = mutated
+	roster.append(pup)
+	last_event = "Bred %s! (H%d S%d B%d)%s" % [pup.name, stats.health, stats.sneak, stats.brawn, "  — a MUTATION!" if mutated else ""]
 	return true
+
+## A pup's inherited stats: a blend of the two STRONGEST adults' (your bloodline),
+## with small jitter. Falls back to random stats if there aren't two to breed from.
+func _breed_stats() -> Dictionary:
+	var ad := adults()
+	if ad.size() < 2:
+		return _recruit_stats()
+	var best: Dictionary = ad[0]
+	var second: Dictionary = ad[1]
+	if _stat_sum(second) > _stat_sum(best):
+		var t := best; best = second; second = t
+	for i in range(2, ad.size()):
+		var g: Dictionary = ad[i]
+		if _stat_sum(g) > _stat_sum(best):
+			second = best
+			best = g
+		elif _stat_sum(g) > _stat_sum(second):
+			second = g
+	return _inherit(best, second)
+
+func _stat_sum(g: Dictionary) -> int:
+	var s: Dictionary = g.get("stats", {})
+	return int(s.get("health", 0)) + int(s.get("sneak", 0)) + int(s.get("brawn", 0))
+
+func _inherit(a: Dictionary, b: Dictionary) -> Dictionary:
+	var sa: Dictionary = a.get("stats", {})
+	var sb: Dictionary = b.get("stats", {})
+	var out := {}
+	for k in ["health", "sneak", "brawn"]:
+		var avg := (int(sa.get(k, 2)) + int(sb.get(k, 2))) / 2.0
+		out[k] = clampi(int(round(avg + randf_range(-0.6, 0.6))), STAT_MIN, STAT_MAX)
+	return out
 
 func set_sent(id: int) -> void:
 	sent_id = id
@@ -184,6 +339,7 @@ func resolve_raid(result: Dictionary) -> void:
 		var loot := int(result.get("loot", 0))
 		resources.shinies += loot
 		resources.food += RAID_FOOD                 # robbed a farm -> grub for the warren
+		legacy += 1                                 # the bloodline's renown grows with every score
 		if not g.is_empty():
 			g.best = maxi(int(g.best), loot)
 		last_event = "%s legged it: +%d shinies, +%d grub." % [who, loot, RAID_FOOD]
@@ -202,6 +358,7 @@ func resolve_raid(result: Dictionary) -> void:
 ## dead, a free runt wanders in.
 func advance_night() -> void:
 	night += 1
+	just_collapsed = false
 	# Pups grow up.
 	for g in roster:
 		if g.alive and g.stage == STAGE_PUP:
@@ -213,10 +370,16 @@ func advance_night() -> void:
 	if have < cost:
 		unrest = mini(UNREST_MAX, unrest + 1)
 		upkeep_note = "Upkeep %d shinies — couldn't pay it! Unrest rising." % cost
+		collapse_pressure += 1
 	else:
 		if unrest > 0:
 			unrest = maxi(0, unrest - 1)
 		upkeep_note = "Upkeep paid: -%d shinies." % cost
+		collapse_pressure = 0
+	# Too many nights unable to pay upkeep -> the warren collapses (run-end; meta carries on).
+	if collapse_pressure >= COLLAPSE_NIGHTS:
+		start_new_run()
+		return
 	# One thing happens overnight: a desertion if the warren's boiling over, else a
 	# random warren event. Mutually exclusive — you never lose two goblins in a night.
 	if unrest >= UNREST_MAX and living().size() > 1:
@@ -225,7 +388,35 @@ func advance_night() -> void:
 		night_event = _roll_night_event()
 	# Anti-softlock backstop: never fully wiped out.
 	if living().is_empty():
-		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _random_stats()))
+		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
+	save_game()
+
+## The warren has fallen (sustained unrest). A roguelike run-end: the LEGACY carries
+## forward (+ a bump for the fallen warren's renown) and the wall of the dead is
+## kept, but the warren itself resets — a fresh, legacy-boosted gang rises to try
+## again. (The full run-end collapse the user chose; needs no extra "keep" plumbing
+## because GameState already separates legacy/fallen from the warren state.)
+func start_new_run() -> void:
+	legacy += 2                      # the fallen warren's renown carries forward
+	_next_id = 0
+	_pup_n = 0
+	roster = [
+		_make_goblin("Snik", STAGE_ADULT, _recruit_stats()),
+		_make_goblin("Grubba", STAGE_ADULT, _recruit_stats()),
+		_make_goblin("Wort", STAGE_ADULT, _recruit_stats()),
+	]
+	resources = {"shinies": 0, "food": START_FOOD}
+	huts = START_HUTS
+	night = 1
+	unrest = 0
+	collapse_pressure = 0
+	sent_id = -1
+	loadout = ""
+	last_event = ""
+	upkeep_note = ""
+	just_collapsed = true
+	night_event = "Warren COLLAPSED — risen anew. Legacy %d carries on." % legacy
+	save_game()
 
 ## One random overnight happening, applied + described (shown in the Den next
 ## morning). Greybox flavour with light economy nudges.
@@ -241,7 +432,7 @@ func _roll_night_event() -> String:
 		return "A good night's foraging out back — +%d food." % n
 	elif r < 40:
 		if living().size() < huts:
-			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _random_stats()))
+			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
 			return "A stray goblin wandered in an' stayed."
 		return "A stray sniffed about but found no free hole."
 	elif r < 56:

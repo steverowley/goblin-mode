@@ -45,7 +45,7 @@ func _build() -> void:
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg)
 
-	_lbl("THE WARREN — Night %d" % GameState.night, Vector2(36, 14), 22)
+	_lbl("THE WARREN — Night %d        Legacy %d" % [GameState.night, GameState.legacy], Vector2(36, 14), 22)
 	_lbl("Food %d   Shinies %d   Holes %d/%d   Unrest [%s%s]" % [
 		int(GameState.resources.get("food", 0)), int(GameState.resources.get("shinies", 0)),
 		GameState.living().size(), GameState.huts,
@@ -58,7 +58,10 @@ func _build() -> void:
 	if GameState.upkeep_note != "":
 		_lbl(GameState.upkeep_note, Vector2(36, 88), 13, Color(1.0, 0.75, 0.4))
 	if GameState.night_event != "":
-		_lbl(GameState.night_event, Vector2(36, 106), 14, Color(0.55, 0.9, 1.0))
+		if GameState.just_collapsed:
+			_lbl(GameState.night_event, Vector2(36, 105), 15, Color(1.0, 0.45, 0.35))
+		else:
+			_lbl(GameState.night_event, Vector2(36, 106), 14, Color(0.55, 0.9, 1.0))
 
 	_build_roster()
 	_build_actions()
@@ -84,7 +87,8 @@ func _build_roster() -> void:
 				_on_pick_sent.bind(g.id), false,
 				Color(0.6, 1.0, 0.5) if sent else Color.WHITE)
 		else:
-			_lbl("%s  [%s] (pup — grows up tonight)" % [g.name, _stat_str(g)], Vector2(40, ry + 6), 13, Color(1, 1, 1, 0.5))
+			var mtag: String = "  *MUTANT*" if g.get("mutant", false) else ""
+			_lbl("%s  [%s] (pup — grows up tonight)%s" % [g.name, _stat_str(g), mtag], Vector2(40, ry + 6), 13, Color(1, 0.9, 0.6) if mtag != "" else Color(1, 1, 1, 0.5))
 		ry += 36
 
 	# Wall of the dead — anchored to a fixed lower-left spot, independent of roster size.
@@ -127,10 +131,12 @@ func _build_actions() -> void:
 
 func _on_dig() -> void:
 	GameState.dig_hut()
+	GameState.save_game()
 	_build.call_deferred()
 
 func _on_breed() -> void:
 	GameState.breed_pup()
+	GameState.save_game()
 	_build.call_deferred()
 
 func _on_pick_sent(id: int) -> void:
