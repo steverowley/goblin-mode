@@ -9,11 +9,19 @@ extends Node
 
 const SCHEMA_VERSION := 1
 
+## The morning loadout the Recruitment Den writes (issue #8): the one kit the
+## player packs for tonight's raid, which the raid reads to change HOW it plays.
+## Kept a plain string id (one of KIT_* below, or "" for "not chosen yet") so it
+## stays JSON-serialisable alongside the rest of GameState.
+const KIT_LOCKPICKS := "lockpicks"
+const KIT_STINK := "stink"
+
 var schema_version := SCHEMA_VERSION
 var roster: Array = []              # living goblins, each a plain Dictionary
 var resources: Dictionary = {}      # the warren's stockpiles, e.g. {"shinies": 0}
 var unlocks: Array = []             # unlocked things, as string ids
 var chosen_target: Dictionary = {}  # the raid the player picked for tonight
+var loadout := ""                   # this morning's packed kit (KIT_* or "")
 var last_raid: Dictionary = {}      # summary of the most recent raid's outcome
 
 func _ready() -> void:
@@ -31,4 +39,5 @@ func new_game() -> void:
 	resources = {"shinies": 0}
 	unlocks = []
 	chosen_target = {"name": "Millfield Cottage", "difficulty": 1}
+	loadout = ""
 	last_raid = {}
