@@ -15,6 +15,19 @@ const SAVE_PATH := "user://goblin_save.json"
 const KIT_LOCKPICKS := "lockpicks"
 const KIT_STINK := "stink"
 
+## The weapon the goblin carries on the raid (combat v3). Knife = the original
+## melee stab (unlimited), Bow = a silent ranged pick-off (limited arrows), Wand =
+## a noisy magic bolt that chips AND stuns (limited charges). Unlike the kit, the
+## weapon persists across mornings (it's gear, not a one-night consumable). Default
+## Knife keeps the standalone Fun Probe byte-identical.
+const WEAPON_KNIFE := "knife"
+const WEAPON_BOW := "bow"
+const WEAPON_WAND := "wand"
+## Weapons are CRAFTED from scrap (the gear-progression curve: stealth early with
+## the free knife, ranged power later once you've tinkered up the scrap). Knife is
+## always owned; once crafted a weapon is kept for good — even across a collapse.
+const WEAPON_COST := {WEAPON_BOW: 8, WEAPON_WAND: 10}
+
 ## Lives-loop tuning (issue #9 + the food/housing breeding loop). Plain numbers,
 ## easy to retune on feel. Goblins are lives: you send one adult on the raid, and
 ## losing it is permanent. New goblins are bred from FOOD into a free mud-HOLE,
@@ -23,9 +36,22 @@ const STAGE_PUP := "pup"
 const STAGE_ADULT := "adult"
 const START_HUTS := 4          # mud-holes = population cap (pups included)
 const START_FOOD := 6
+const START_SHINIES := 8       # a gold buffer so the opening isn't a forced collapse (balance pass)
+const START_SCRAP := 0
 const BREED_FOOD := 4          # food to breed one pup
-const DIG_SHINIES := 8         # shinies to dig a new mud-hole (+1 capacity)
+const DIG_SCRAP := 5           # SCRAP to dig a new mud-hole (+1 capacity) — tinkers make scrap
 const RAID_FOOD := 5           # grub nicked from a farm on a successful raid (raids are the larder)
+
+## Jobs (#12). Idle stay-home adults can WORK overnight: a Cook brings in food, a
+## Tinker scavenges scrap (which digs mud-holes). The raider who's out tonight
+## can't also work. Goblins also EAT each night — go hungry and unrest rises.
+const JOB_IDLE := "idle"
+const JOB_COOK := "cook"
+const JOB_TINKER := "tinker"
+const JOB_CYCLE := [JOB_IDLE, JOB_COOK, JOB_TINKER]   # order the Den button cycles through
+const COOK_FOOD := 2           # food a Cook brings in per night
+const TINKER_SCRAP := 2        # scrap a Tinker scavenges per night
+const FOOD_PER_GOBLIN := 1     # food each living goblin eats per night (starvation -> unrest)
 
 ## Goblin stats (Bite 2a). Each 1..STAT_MAX. Health = hits survived on a raid;
 ## Sneak = quieter; Brawn = lugs loot with less drag. Starters skew LOW health so
@@ -34,6 +60,19 @@ const STAT_MIN := 1
 const STAT_MAX := 4
 const CONCEIVE_CHANCE := 80      # % chance a breeding actually produces a pup
 const MUTATION_CHANCE := 14      # % chance a bred pup mutates one stat to a wild value
+
+## Traits (#11): a born-with perk that VISIBLY changes a raid. Data-driven — the
+## raid reads the id and applies the effect (see fun_probe._apply_trait), so adding
+## a new trait is just another entry here + one match arm. A normal birth/recruit
+## has TRAIT_CHANCE to roll one; a MUTANT pup always does (mutation = a wild trait).
+const TRAIT_CHANCE := 16
+const TRAITS := {
+	"nimble": {"name": "Nimble", "blurb": "quick feet — faster, dodges sooner"},
+	"brute":  {"name": "Brute",  "blurb": "thick hide — soaks an extra clout (+1 hit)"},
+	"lucky":  {"name": "Lucky",  "blurb": "magpie eyes — every shiny's worth more"},
+	"keen":   {"name": "Keen",   "blurb": "sharp eyes — sees further, reads rooms sooner"},
+	"feral":  {"name": "Feral",  "blurb": "bad temper — hits Goblin Mode quicker, but louder"},
+}
 
 ## Warren upkeep + nightly events (#12 economy + Bite-3 stakes groundwork). Each
 ## night gold pays upkeep per living goblin; a shortfall breeds UNREST, and at the
@@ -48,6 +87,8 @@ var resources: Dictionary = {}      # {"shinies": int, "food": int}
 var unlocks: Array = []             # unlocked things, as string ids
 var chosen_target: Dictionary = {}  # the raid the player picked for tonight
 var loadout := ""                   # this morning's packed kit (KIT_* or "")
+var weapon := WEAPON_KNIFE           # the carried weapon (WEAPON_*); persists across mornings
+var owned_weapons: Array = [WEAPON_KNIFE]   # weapons crafted so far (meta gear — kept across collapse)
 var huts := START_HUTS              # housing capacity = max LIVING goblins
 var night := 1                      # which night the warren is on
 var sent_id := -1                   # id of the goblin sent on tonight's raid (-1 = none chosen)
@@ -79,12 +120,14 @@ func new_game() -> void:
 	roster = [
 		_make_goblin("Snik", STAGE_ADULT, {"health": 1, "sneak": 4, "brawn": 1}),    # glass sneak — must ghost
 		_make_goblin("Grubba", STAGE_ADULT, {"health": 2, "sneak": 1, "brawn": 4}),  # loud bruiser
-		_make_goblin("Wort", STAGE_ADULT, {"health": 2, "sneak": 2, "brawn": 2}),    # all-rounder
+		_make_goblin("Wort", STAGE_ADULT, {"health": 2, "sneak": 2, "brawn": 2}, "keen"),  # all-rounder, sharp-eyed (shows traits off from night 1)
 	]
-	resources = {"shinies": 0, "food": START_FOOD}
+	resources = {"shinies": START_SHINIES, "food": START_FOOD, "scrap": START_SCRAP}
 	unlocks = []
 	chosen_target = {"name": "Millfield Cottage", "difficulty": 1}
 	loadout = ""
+	weapon = WEAPON_KNIFE
+	owned_weapons = [WEAPON_KNIFE]
 	huts = START_HUTS
 	night = 1
 	sent_id = -1
@@ -105,7 +148,7 @@ func _save_dict() -> Dictionary:
 	return {
 		"schema_version": SCHEMA_VERSION,
 		"roster": roster, "resources": resources, "unlocks": unlocks,
-		"chosen_target": chosen_target, "loadout": loadout, "huts": huts, "night": night,
+		"chosen_target": chosen_target, "loadout": loadout, "weapon": weapon, "owned_weapons": owned_weapons, "huts": huts, "night": night,
 		"sent_id": sent_id, "fallen": fallen, "last_raid": last_raid, "last_event": last_event,
 		"unrest": unrest, "night_event": night_event, "upkeep_note": upkeep_note,
 		"legacy": legacy, "collapse_pressure": collapse_pressure,
@@ -125,6 +168,8 @@ func _apply_dict(data: Dictionary) -> bool:
 		return false
 	if typeof(data.get("unlocks", [])) != TYPE_ARRAY:
 		return false
+	if typeof(data.get("owned_weapons", [])) != TYPE_ARRAY:
+		return false
 	if typeof(data.get("chosen_target", {})) != TYPE_DICTIONARY:
 		return false
 	if typeof(data.get("last_raid", {})) != TYPE_DICTIONARY:
@@ -134,6 +179,8 @@ func _apply_dict(data: Dictionary) -> bool:
 	unlocks = data.get("unlocks", [])
 	chosen_target = data.get("chosen_target", {})
 	loadout = String(data.get("loadout", ""))
+	weapon = String(data.get("weapon", WEAPON_KNIFE))
+	owned_weapons = data.get("owned_weapons", [WEAPON_KNIFE])
 	huts = int(data.get("huts", START_HUTS))
 	night = int(data.get("night", 1))
 	sent_id = int(data.get("sent_id", -1))
@@ -181,10 +228,18 @@ func load_game() -> bool:
 		return false
 	return _apply_dict(data)
 
-func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
-	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
+func _make_goblin(gname: String, stage: String, stats: Dictionary, trait_id := "") -> Dictionary:
+	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats, "trait": trait_id, "job": JOB_IDLE}
 	_next_id += 1
 	return g
+
+## A random trait id, or "" — used at each birth/recruit site. Mutant pups force a
+## trait (pass force=true); everyone else only rolls one TRAIT_CHANCE of the time.
+func _roll_trait(force := false) -> String:
+	if not force and randi() % 100 >= TRAIT_CHANCE:
+		return ""
+	var keys := TRAITS.keys()
+	return String(keys[randi() % keys.size()])
 
 ## Random starting stats for a fresh recruit (bred pup / free runt). Health skews
 ## low for now; genetics (Bite 2b) will replace this with parent inheritance.
@@ -232,14 +287,42 @@ func sent_goblin() -> Dictionary:
 # --- Day actions (instant, repeatable while affordable) -------------------
 
 func can_dig() -> bool:
-	return int(resources.get("shinies", 0)) >= DIG_SHINIES
+	return int(resources.get("scrap", 0)) >= DIG_SCRAP
 
 func dig_hut() -> bool:
 	if not can_dig():
 		return false
-	resources.shinies -= DIG_SHINIES
+	resources.scrap = int(resources.get("scrap", 0)) - DIG_SCRAP
 	huts += 1
 	return true
+
+## --- Weapon crafting (gear progression). Knife is free/always owned; bow & wand
+## are crafted from scrap and then kept for good (across collapse). ---
+func weapon_cost(wid: String) -> int:
+	return int(WEAPON_COST.get(wid, 0))
+
+func owns_weapon(wid: String) -> bool:
+	return wid == WEAPON_KNIFE or wid in owned_weapons
+
+func can_unlock_weapon(wid: String) -> bool:
+	return not owns_weapon(wid) and int(resources.get("scrap", 0)) >= weapon_cost(wid)
+
+func unlock_weapon(wid: String) -> bool:
+	if not can_unlock_weapon(wid):
+		return false
+	resources.scrap = int(resources.get("scrap", 0)) - weapon_cost(wid)
+	owned_weapons.append(wid)
+	return true
+
+## Cycle a goblin's overnight job (idle -> cook -> tinker -> idle). The Den drives
+## this; the raider's job is skipped the night it's out raiding.
+func cycle_job(id: int) -> void:
+	var g := goblin_by_id(id)
+	if g.is_empty():
+		return
+	var cur := String(g.get("job", JOB_IDLE))
+	var i: int = JOB_CYCLE.find(cur)
+	g.job = JOB_CYCLE[(i + 1) % JOB_CYCLE.size()]
 
 func can_breed() -> bool:
 	return living().size() < huts and int(resources.get("food", 0)) >= BREED_FOOD
@@ -261,10 +344,13 @@ func breed_pup() -> bool:
 		var keys := ["health", "sneak", "brawn"]
 		var k: String = keys[randi() % keys.size()]
 		stats[k] = randi_range(STAT_MIN, STAT_MAX)
-	var pup := _make_goblin(_pup_name(), STAGE_PUP, stats)
+	# A mutant ALWAYS expresses a trait; an ordinary pup might inherit one.
+	var trait_id := _roll_trait(mutated)
+	var pup := _make_goblin(_pup_name(), STAGE_PUP, stats, trait_id)
 	pup["mutant"] = mutated
 	roster.append(pup)
-	last_event = "Bred %s! (H%d S%d B%d)%s" % [pup.name, stats.health, stats.sneak, stats.brawn, "  — a MUTATION!" if mutated else ""]
+	var trait_bit := "  [%s]" % TRAITS[trait_id].name if trait_id != "" else ""
+	last_event = "Bred %s! (H%d S%d B%d)%s%s" % [pup.name, stats.health, stats.sneak, stats.brawn, trait_bit, "  — a MUTATION!" if mutated else ""]
 	return true
 
 ## A pup's inherited stats: a blend of the two STRONGEST adults' (your bloodline),
@@ -334,6 +420,7 @@ func _forage_roll() -> int:
 ## its name + best feat go on the wall of the dead.
 func resolve_raid(result: Dictionary) -> void:
 	var g := sent_goblin()
+	var rid: int = int(g.id) if not g.is_empty() else -1
 	var who: String = String(g.name) if not g.is_empty() else "The goblin"
 	if String(result.get("outcome", "lost")) == "won":
 		var loot := int(result.get("loot", 0))
@@ -351,32 +438,79 @@ func resolve_raid(result: Dictionary) -> void:
 	last_raid = result
 	clear_sent()
 	loadout = ""
-	advance_night()
+	advance_night(rid)
 
 ## Tick to the next morning: pups grow into adults, the night advances, and the
 ## anti-softlock backstop guarantees you're never wiped out — if every goblin is
 ## dead, a free runt wanders in.
-func advance_night() -> void:
+func advance_night(raider_id := -1) -> void:
 	night += 1
 	just_collapsed = false
+
+	# Jobs (#12): stay-home adults work overnight. The raider's out tonight, so it
+	# doesn't pull a shift — pups can't work yet (they grow up below).
+	var prod_food := 0
+	var prod_scrap := 0
+	for g in roster:
+		if g.alive and g.stage == STAGE_ADULT and g.id != raider_id:
+			match String(g.get("job", JOB_IDLE)):
+				JOB_COOK:
+					prod_food += COOK_FOOD
+				JOB_TINKER:
+					prod_scrap += TINKER_SCRAP
+	resources.food = int(resources.get("food", 0)) + prod_food
+	resources.scrap = int(resources.get("scrap", 0)) + prod_scrap
+
 	# Pups grow up.
 	for g in roster:
 		if g.alive and g.stage == STAGE_PUP:
 			g.stage = STAGE_ADULT
-	# Upkeep: the warren eats gold; a shortfall breeds unrest, paying it calms things.
+
+	# Compose ONE overnight economy line (workers / hunger / upkeep) for the Den.
+	var report := PackedStringArray()
+	if prod_food > 0 or prod_scrap > 0:
+		var bits := PackedStringArray()
+		if prod_food > 0:
+			bits.append("+%d food" % prod_food)
+		if prod_scrap > 0:
+			bits.append("+%d scrap" % prod_scrap)
+		report.append("Workers: " + ", ".join(bits))
+
+	# The warren EATS (food). A shortfall is hunger -> unrest.
+	var mouths := living().size() * FOOD_PER_GOBLIN
+	var food_have := int(resources.get("food", 0))
+	var ate := mini(food_have, mouths)
+	resources.food = food_have - ate
+	var hungry := mouths - ate
+	if hungry > 0:
+		unrest = mini(UNREST_MAX, unrest + 1)
+		report.append("HUNGRY! short %d food — unrest rising" % hungry)
+
+	# Upkeep (gold). Pay what you can; only a DESTITUTE night (couldn't pay a single
+	# shiny) builds collapse pressure, so a won or part-paid night treads water — it's
+	# rock-bottom destitution for COLLAPSE_NIGHTS running that ends a run, not merely
+	# being a bit short (balance pass — fixes the night-4 force-collapse).
 	var cost := living().size() * UPKEEP_PER_GOBLIN
 	var have := int(resources.get("shinies", 0))
-	resources.shinies = maxi(0, have - cost)
-	if have < cost:
-		unrest = mini(UNREST_MAX, unrest + 1)
-		upkeep_note = "Upkeep %d shinies — couldn't pay it! Unrest rising." % cost
-		collapse_pressure += 1
-	else:
-		if unrest > 0:
-			unrest = maxi(0, unrest - 1)
-		upkeep_note = "Upkeep paid: -%d shinies." % cost
+	var paid := mini(have, cost)
+	resources.shinies = have - paid
+	if paid >= cost:
 		collapse_pressure = 0
-	# Too many nights unable to pay upkeep -> the warren collapses (run-end; meta carries on).
+		report.append("Upkeep paid: -%d shinies" % cost)
+		# A fed, paid-up warren settles — but a hungry one won't be soothed by gold.
+		if hungry == 0 and unrest > 0:
+			unrest = maxi(0, unrest - 1)
+	elif paid > 0:
+		collapse_pressure = 0           # part-paid still keeps the lid on the riot
+		unrest = mini(UNREST_MAX, unrest + 1)
+		report.append("Upkeep part-paid: -%d of %d shinies — grumbling" % [paid, cost])
+	else:
+		unrest = mini(UNREST_MAX, unrest + 1)
+		collapse_pressure += 1
+		report.append("Upkeep %d shinies — NOTHING in the pot! Unrest rising" % cost)
+	upkeep_note = "  |  ".join(report)
+
+	# Too many broke nights unable to pay gold upkeep -> the warren collapses (run-end; meta carries on).
 	if collapse_pressure >= COLLAPSE_NIGHTS:
 		start_new_run()
 		return
@@ -388,7 +522,7 @@ func advance_night() -> void:
 		night_event = _roll_night_event()
 	# Anti-softlock backstop: never fully wiped out.
 	if living().is_empty():
-		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
+		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats(), _roll_trait()))
 	save_game()
 
 ## The warren has fallen (sustained unrest). A roguelike run-end: the LEGACY carries
@@ -401,11 +535,11 @@ func start_new_run() -> void:
 	_next_id = 0
 	_pup_n = 0
 	roster = [
-		_make_goblin("Snik", STAGE_ADULT, _recruit_stats()),
-		_make_goblin("Grubba", STAGE_ADULT, _recruit_stats()),
-		_make_goblin("Wort", STAGE_ADULT, _recruit_stats()),
+		_make_goblin("Snik", STAGE_ADULT, _recruit_stats(), _roll_trait()),
+		_make_goblin("Grubba", STAGE_ADULT, _recruit_stats(), _roll_trait()),
+		_make_goblin("Wort", STAGE_ADULT, _recruit_stats(), _roll_trait()),
 	]
-	resources = {"shinies": 0, "food": START_FOOD}
+	resources = {"shinies": START_SHINIES, "food": START_FOOD, "scrap": START_SCRAP}
 	huts = START_HUTS
 	night = 1
 	unrest = 0
@@ -432,7 +566,7 @@ func _roll_night_event() -> String:
 		return "A good night's foraging out back — +%d food." % n
 	elif r < 40:
 		if living().size() < huts:
-			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
+			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats(), _roll_trait()))
 			return "A stray goblin wandered in an' stayed."
 		return "A stray sniffed about but found no free hole."
 	elif r < 56:
