@@ -25,7 +25,7 @@ const SMASH_R := 36.0
 const MELEE_R := 38.0            # reach of a sword swipe (Bite 2.5)
 const STAB_CD := 0.3             # gap between swipes (quick — guard swings are uninterruptible, so no flinch-lock)
 const SWIPE_HALF := deg_to_rad(55.0)   # half-angle of the frontal swipe cone
-const SWIPE_TIME := 0.14         # how long the swipe arc is drawn
+const SWIPE_TIME := 0.18         # how long the swipe arc is drawn
 const PLAYER_START := Vector2(80, 470)
 const EXIT_POS := Vector2(80, 80)
 const EXIT_R := 34.0
@@ -754,11 +754,16 @@ class _OverlayDraw extends Node2D:
 			probe._draw_overlay(self)
 
 func _draw_overlay(cv: CanvasItem) -> void:
-	# Sword swipe arc (Bite 2.5) — a quick slash drawn in front of the goblin.
+	# Sword swipe (Bite 2.5) — a bright filled slash arc in front of the goblin.
 	if _swipe_t > 0.0 and _player != null:
 		var sa := _swipe_dir.angle()
 		var salpha := clampf(_swipe_t / SWIPE_TIME, 0.0, 1.0)
-		cv.draw_arc(_player.global_position, MELEE_R, sa - SWIPE_HALF, sa + SWIPE_HALF, 18, Color(1, 1, 1, 0.85 * salpha), 3.0)
+		var pts := PackedVector2Array([_player.global_position])
+		for i in range(13):
+			var ang := sa - SWIPE_HALF + (2.0 * SWIPE_HALF) * (float(i) / 12.0)
+			pts.append(_player.global_position + Vector2(cos(ang), sin(ang)) * MELEE_R)
+		cv.draw_colored_polygon(pts, Color(0.95, 0.97, 1.0, 0.45 * salpha))
+		cv.draw_arc(_player.global_position, MELEE_R, sa - SWIPE_HALF, sa + SWIPE_HALF, 20, Color(1, 1, 1, 0.95 * salpha), 2.5)
 	# Stink cloud (issue #8) — a green pall, kept bright above the fog, that lures guards in.
 	if _stink_t > 0.0:
 		var sa: float = clampf(_stink_t / STINK_TIME, 0.0, 1.0)

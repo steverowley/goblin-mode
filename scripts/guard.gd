@@ -362,12 +362,19 @@ func _draw() -> void:
 			cone_col = Color(1, 0.55, 0.1, 0.13)
 		draw_colored_polygon(_cone_pts, cone_col)
 
-	# Telegraphed strike wind-up — a red tell the player reads to dodge.
+	# Telegraphed strike wind-up — a red wedge swelling TOWARD you (the incoming
+	# swing). Dodge out of it before it lands.
 	if winding and _player != null:
 		var tp := 1.0 - clampf(_windup_t / WINDUP_TIME, 0.0, 1.0)   # 0..1 as the swing charges
-		var dirp := (_player.global_position - global_position).normalized()
-		draw_circle(Vector2.ZERO, 22.0 + 8.0 * tp, Color(1.0, 0.2, 0.1, 0.22))
-		draw_line(Vector2.ZERO, dirp * (STRIKE_R * tp), Color(1.0, 0.35, 0.1, 0.85), 3.0)
+		var ga := (_player.global_position - global_position).angle()
+		var half := deg_to_rad(42.0)
+		var reach := (STRIKE_R + 6.0) * tp
+		var wpts := PackedVector2Array([Vector2.ZERO])
+		for i in range(11):
+			var ang := ga - half + (2.0 * half) * (float(i) / 10.0)
+			wpts.append(Vector2(cos(ang), sin(ang)) * reach)
+		draw_colored_polygon(wpts, Color(1.0, 0.2, 0.1, 0.15 + 0.25 * tp))
+		draw_arc(Vector2.ZERO, reach, ga - half, ga + half, 14, Color(1.0, 0.35, 0.1, 0.9), 2.5)
 	# Big tall-folk body (deliberately larger than the goblin).
 	var bcol: Color = body_color.lerp(Color(1.0, 0.25, 0.1), 0.5) if winding else body_color
 	draw_rect(Rect2(-16, -16, 32, 32), bcol)
