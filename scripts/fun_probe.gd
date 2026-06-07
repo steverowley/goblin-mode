@@ -42,6 +42,17 @@ const SEEN_T := 0.85                  # fog alpha cutoff: cell counts as clear
 const REAL_THRESH := 0.6              # item.mem above this -> draw the real shiny
 const Q_MIN := 0.05                   # below this -> "?" gone (forgotten)
 
+## Emitted once the raid is over (won or lost) AND the player has acknowledged
+## the result, carrying {outcome, loot}. The M2 spine listens for this to slink
+## back to the warren; launched directly, nothing is connected.
+signal raid_finished(result: Dictionary)
+
+## Set true by the M2 spine before it adds this raid as a child. Default false ->
+## launched directly, the Fun Probe behaves exactly as the standalone greybox
+## always has (banner + R to restart, no return-to-warren handoff).
+var embedded := false
+var _awaiting_return := false        # embedded + resolved: next key returns to the warren
+
 var _player: GoblinScript
 var _guards: Array = []       # the tall-folk on patrol (noise routed to all)
 
@@ -278,7 +289,12 @@ func _process(delta: float) -> void:
 func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed):
 		return
-	if event.keycode == KEY_R:
+	# Embedded under the M2 spine and the raid is over: any key slinks home.
+	if _awaiting_return:
+		_awaiting_return = false
+		raid_finished.emit({"outcome": _state, "loot": _banked})
+		return
+	if event.keycode == KEY_R and not embedded:
 		get_tree().reload_current_scene()
 		return
 	if _state != "play":
@@ -478,13 +494,23 @@ func _win() -> void:
 		return
 	_state = "won"
 	_banked = _player.sack
-	_show_banner("LEGGED IT with %d shinies! What a menace.\nPress R to raid again." % _banked)
+	var head := "LEGGED IT with %d shinies! What a menace." % _banked
+	if embedded:
+		_awaiting_return = true
+		_show_banner(head + "\n(press any key to slink back to the warren)")
+	else:
+		_show_banner(head + "\nPress R to raid again.")
 
 func _lose(reason: String) -> void:
 	if _state != "play":
 		return
 	_state = "lost"
-	_show_banner(reason + "\n(You were lugging %d shinies.) Press R to try again." % _player.sack)
+	var lugging := "\n(You were lugging %d shinies.)" % _player.sack
+	if embedded:
+		_awaiting_return = true
+		_show_banner(reason + lugging + "\n(press any key to slink back to the warren)")
+	else:
+		_show_banner(reason + lugging + " Press R to try again.")
 
 func _show_banner(text: String) -> void:
 	_banner.text = text
