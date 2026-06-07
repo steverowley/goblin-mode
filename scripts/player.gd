@@ -28,6 +28,9 @@ var is_lit := false
 var sack := 0                    # shinies grabbed (value)
 var weight := 0.0                # sack weight (slows + loudens you)
 var carry := 1.0                 # brawn stat: >1 lugs a heavy sack with less drag/noise (1.0 = neutral)
+var speed_mult := 1.0            # trait hook (Nimble): scales move speed (1.0 = neutral)
+var dash_cd_mult := 1.0          # trait hook (Nimble): scales dodge-roll cooldown (1.0 = neutral)
+var chaos_mult := 1.0            # trait hook (Feral): scales how fast chaos/frenzy builds (1.0 = neutral)
 var dashing := false             # dodge-roll burst (open brawl) — grants brief i-frames
 var _dash_dir := Vector2.RIGHT
 var _dash_t := 0.0
@@ -88,6 +91,7 @@ func _physics_process(delta: float) -> void:
 	else:
 		var base := SNEAK_SPEED if is_sneaking else WALK_SPEED
 		speed = base * clampf(1.0 - weight * WEIGHT_DRAG / carry, 0.45, 1.0)
+	speed *= speed_mult              # Nimble trait quickens every gait
 
 	if dashing:
 		velocity = _dash_dir * DASH_SPEED
@@ -137,7 +141,7 @@ func bump_noise(v: float) -> void:
 	noise = maxf(noise, v)
 
 func add_chaos(amount: float) -> void:
-	chaos = clampf(chaos + amount, 0.0, 1.0)
+	chaos = clampf(chaos + amount * chaos_mult, 0.0, 1.0)
 
 func can_frenzy() -> bool:
 	return not frenzy and chaos >= FRENZY_COST
@@ -154,7 +158,7 @@ func start_dash() -> void:
 	_dash_dir = (_move_dir if _move_dir != Vector2.ZERO else facing).normalized()
 	dashing = true
 	_dash_t = DASH_TIME
-	_dash_cd = DASH_CD
+	_dash_cd = DASH_CD * dash_cd_mult
 
 func _draw() -> void:
 	var wob := sin(_wiggle) * 2.0    # waddle

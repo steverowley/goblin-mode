@@ -35,6 +35,19 @@ const STAT_MAX := 4
 const CONCEIVE_CHANCE := 80      # % chance a breeding actually produces a pup
 const MUTATION_CHANCE := 14      # % chance a bred pup mutates one stat to a wild value
 
+## Traits (#11): a born-with perk that VISIBLY changes a raid. Data-driven — the
+## raid reads the id and applies the effect (see fun_probe._apply_trait), so adding
+## a new trait is just another entry here + one match arm. A normal birth/recruit
+## has TRAIT_CHANCE to roll one; a MUTANT pup always does (mutation = a wild trait).
+const TRAIT_CHANCE := 16
+const TRAITS := {
+	"nimble": {"name": "Nimble", "blurb": "quick feet — faster, dodges sooner"},
+	"brute":  {"name": "Brute",  "blurb": "thick hide — soaks an extra clout (+1 hit)"},
+	"lucky":  {"name": "Lucky",  "blurb": "magpie eyes — every shiny's worth more"},
+	"keen":   {"name": "Keen",   "blurb": "sharp eyes — sees further, reads rooms sooner"},
+	"feral":  {"name": "Feral",  "blurb": "bad temper — hits Goblin Mode quicker, but louder"},
+}
+
 ## Warren upkeep + nightly events (#12 economy + Bite-3 stakes groundwork). Each
 ## night gold pays upkeep per living goblin; a shortfall breeds UNREST, and at the
 ## cap a goblin deserts. (The full run-end collapse waits for meta-progression.)
@@ -79,7 +92,7 @@ func new_game() -> void:
 	roster = [
 		_make_goblin("Snik", STAGE_ADULT, {"health": 1, "sneak": 4, "brawn": 1}),    # glass sneak — must ghost
 		_make_goblin("Grubba", STAGE_ADULT, {"health": 2, "sneak": 1, "brawn": 4}),  # loud bruiser
-		_make_goblin("Wort", STAGE_ADULT, {"health": 2, "sneak": 2, "brawn": 2}),    # all-rounder
+		_make_goblin("Wort", STAGE_ADULT, {"health": 2, "sneak": 2, "brawn": 2}, "keen"),  # all-rounder, sharp-eyed (shows traits off from night 1)
 	]
 	resources = {"shinies": 0, "food": START_FOOD}
 	unlocks = []
@@ -181,10 +194,18 @@ func load_game() -> bool:
 		return false
 	return _apply_dict(data)
 
-func _make_goblin(gname: String, stage: String, stats: Dictionary) -> Dictionary:
-	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats}
+func _make_goblin(gname: String, stage: String, stats: Dictionary, trait_id := "") -> Dictionary:
+	var g := {"id": _next_id, "name": gname, "stage": stage, "alive": true, "best": 0, "stats": stats, "trait": trait_id}
 	_next_id += 1
 	return g
+
+## A random trait id, or "" — used at each birth/recruit site. Mutant pups force a
+## trait (pass force=true); everyone else only rolls one TRAIT_CHANCE of the time.
+func _roll_trait(force := false) -> String:
+	if not force and randi() % 100 >= TRAIT_CHANCE:
+		return ""
+	var keys := TRAITS.keys()
+	return String(keys[randi() % keys.size()])
 
 ## Random starting stats for a fresh recruit (bred pup / free runt). Health skews
 ## low for now; genetics (Bite 2b) will replace this with parent inheritance.
@@ -261,10 +282,13 @@ func breed_pup() -> bool:
 		var keys := ["health", "sneak", "brawn"]
 		var k: String = keys[randi() % keys.size()]
 		stats[k] = randi_range(STAT_MIN, STAT_MAX)
-	var pup := _make_goblin(_pup_name(), STAGE_PUP, stats)
+	# A mutant ALWAYS expresses a trait; an ordinary pup might inherit one.
+	var trait_id := _roll_trait(mutated)
+	var pup := _make_goblin(_pup_name(), STAGE_PUP, stats, trait_id)
 	pup["mutant"] = mutated
 	roster.append(pup)
-	last_event = "Bred %s! (H%d S%d B%d)%s" % [pup.name, stats.health, stats.sneak, stats.brawn, "  — a MUTATION!" if mutated else ""]
+	var trait_bit := "  [%s]" % TRAITS[trait_id].name if trait_id != "" else ""
+	last_event = "Bred %s! (H%d S%d B%d)%s%s" % [pup.name, stats.health, stats.sneak, stats.brawn, trait_bit, "  — a MUTATION!" if mutated else ""]
 	return true
 
 ## A pup's inherited stats: a blend of the two STRONGEST adults' (your bloodline),
@@ -388,7 +412,7 @@ func advance_night() -> void:
 		night_event = _roll_night_event()
 	# Anti-softlock backstop: never fully wiped out.
 	if living().is_empty():
-		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
+		roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats(), _roll_trait()))
 	save_game()
 
 ## The warren has fallen (sustained unrest). A roguelike run-end: the LEGACY carries
@@ -401,9 +425,9 @@ func start_new_run() -> void:
 	_next_id = 0
 	_pup_n = 0
 	roster = [
-		_make_goblin("Snik", STAGE_ADULT, _recruit_stats()),
-		_make_goblin("Grubba", STAGE_ADULT, _recruit_stats()),
-		_make_goblin("Wort", STAGE_ADULT, _recruit_stats()),
+		_make_goblin("Snik", STAGE_ADULT, _recruit_stats(), _roll_trait()),
+		_make_goblin("Grubba", STAGE_ADULT, _recruit_stats(), _roll_trait()),
+		_make_goblin("Wort", STAGE_ADULT, _recruit_stats(), _roll_trait()),
 	]
 	resources = {"shinies": 0, "food": START_FOOD}
 	huts = START_HUTS
@@ -432,7 +456,7 @@ func _roll_night_event() -> String:
 		return "A good night's foraging out back — +%d food." % n
 	elif r < 40:
 		if living().size() < huts:
-			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats()))
+			roster.append(_make_goblin(_pup_name(), STAGE_ADULT, _recruit_stats(), _roll_trait()))
 			return "A stray goblin wandered in an' stayed."
 		return "A stray sniffed about but found no free hole."
 	elif r < 56:

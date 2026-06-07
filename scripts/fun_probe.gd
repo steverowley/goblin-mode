@@ -77,6 +77,12 @@ var _swipe_t := 0.0                  # swipe-arc draw timer
 var _swipe_dir := Vector2.RIGHT
 var _noise_mult := 1.0               # Sneak stat: <1 = quieter to guards (1.0 = neutral/standalone)
 
+# --- Trait the sent goblin was born with (#11). Neutral when launched directly. ---
+var _trait_id := ""                  # the sent goblin's trait id ("" = none)
+var _loot_bonus := 0                 # Lucky trait: +value on every shiny grabbed
+var _cone_len := CONE_LEN            # vision reach (Keen widens it)
+var _cone_half := CONE_HALF          # vision half-angle (Keen widens it)
+
 var _player: GoblinScript
 var _guards: Array = []       # the tall-folk on patrol (noise routed to all)
 
@@ -278,6 +284,28 @@ func _apply_loadout() -> void:
 		var brawn_t := clampf((float(int(st.get("brawn", 2))) - lo) / (hi - lo), 0.0, 1.0)
 		_noise_mult = lerpf(1.25, 0.55, sneak_t)       # higher Sneak = quieter
 		_player.carry = lerpf(0.7, 1.8, brawn_t)       # higher Brawn = lugs loot with less drag
+		_apply_trait(String(sent.get("trait", "")))
+
+## Apply the sent goblin's born-with trait (#11). One match arm per trait; "" (no
+## trait, or launched directly) leaves everything neutral. Effects are deliberately
+## chunky so a trait VISIBLY changes how the raid plays.
+func _apply_trait(t: String) -> void:
+	_trait_id = t
+	match t:
+		"nimble":
+			_player.speed_mult = 1.18
+			_player.dash_cd_mult = 0.6
+		"brute":
+			_hp_max += 1
+			_hp = _hp_max
+		"lucky":
+			_loot_bonus = 1
+		"keen":
+			_cone_len = CONE_LEN * 1.3
+			_cone_half = minf(CONE_HALF * 1.12, deg_to_rad(80.0))
+		"feral":
+			_player.chaos_mult = 1.7
+			_noise_mult *= 1.25
 
 func _physics_process(delta: float) -> void:
 	if _state != "play":
@@ -297,7 +325,7 @@ func _physics_process(delta: float) -> void:
 	for item in _loot:
 		if not item.taken and _player.global_position.distance_to(item.pos) < GRAB_R:
 			item.taken = true
-			_player.add_loot(item.value, item.weight)
+			_player.add_loot(item.value + _loot_bonus, item.weight)
 			_player.add_chaos(0.06)
 			_emit_noise(item.pos, 0.30)      # a faint scuffle — risky right by a guard
 			_spawn_text(item.pos, "heh heh", Color(1, 0.9, 0.3))
@@ -435,7 +463,7 @@ func _update_fog(delta: float) -> void:
 	# (a) The goblin's vision cone.
 	var gp := _player.global_position
 	var f := _player.facing
-	var cb := _reveal_box(gp, CONE_LEN)
+	var cb := _reveal_box(gp, _cone_len)
 	for row in range(cb.position.y, cb.position.y + cb.size.y + 1):
 		for col in range(cb.position.x, cb.position.x + cb.size.x + 1):
 			var c := _cell_center(col, row)
@@ -443,7 +471,7 @@ func _update_fog(delta: float) -> void:
 			var d := v.length()
 			if d <= NEAR_R:
 				_mem[_cell_idx(col, row)] = 1.0
-			elif d <= CONE_LEN and absf(f.angle_to(v)) <= CONE_HALF and _clear(gp, c):
+			elif d <= _cone_len and absf(f.angle_to(v)) <= _cone_half and _clear(gp, c):
 				_mem[_cell_idx(col, row)] = 1.0
 
 	# (b) Lit lanterns light up their room. The lantern->cell visibility is baked
@@ -548,7 +576,7 @@ func _smash_near(pos: Vector2, radius: float, all_in_range: bool) -> void:
 			_player.bump_noise(0.80)
 			_emit_noise(p.pos, 0.90)
 			if int(p.pos.x) % 2 == 0:          # roughly half the pots hide loot
-				_player.add_loot(1, 1.0)
+				_player.add_loot(1 + _loot_bonus, 1.0)
 				_spawn_text(p.pos, "*SMASH* shiny!", Color(1, 0.9, 0.3))
 			else:
 				_spawn_text(p.pos, "*SMASH*", Color(1, 0.6, 0.2))
@@ -697,8 +725,11 @@ func _update_info() -> void:
 	elif _stink_charges > 0:
 		lines.append("KIT: stink bomb x%d — press F near a chokepoint to lure the guards." % _stink_charges)
 	if _sent_name != "":
-		lines.append("On the line: %s   HP [%s%s]   (get 'em home alive)" % [
-			_sent_name, "#".repeat(_hp), "-".repeat(maxi(0, _hp_max - _hp))])
+		var trait_bit := ""
+		if _trait_id != "" and GameState.TRAITS.has(_trait_id):
+			trait_bit = "  {%s}" % GameState.TRAITS[_trait_id].name
+		lines.append("On the line: %s%s   HP [%s%s]   (get 'em home alive)" % [
+			_sent_name, trait_bit, "#".repeat(_hp), "-".repeat(maxi(0, _hp_max - _hp))])
 	_info.text = "\n".join(lines)
 
 func _meter(v: float, cells: int) -> String:

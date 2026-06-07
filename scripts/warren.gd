@@ -82,13 +82,13 @@ func _build_roster() -> void:
 		var g: Dictionary = rows[i]
 		if g.stage == GameState.STAGE_ADULT:
 			var sent: bool = (g.id == GameState.sent_id)
-			_btn("%s  [%s]%s" % [g.name, _stat_str(g), "   <- SENT" if sent else ""],
+			_btn("%s  [%s]%s%s" % [g.name, _stat_str(g), _trait_tag(g), "   <- SENT" if sent else ""],
 				Vector2(36, ry), Vector2(290, 30),
 				_on_pick_sent.bind(g.id), false,
 				Color(0.6, 1.0, 0.5) if sent else Color.WHITE)
 		else:
 			var mtag: String = "  *MUTANT*" if g.get("mutant", false) else ""
-			_lbl("%s  [%s] (pup — grows up tonight)%s" % [g.name, _stat_str(g), mtag], Vector2(40, ry + 6), 13, Color(1, 0.9, 0.6) if mtag != "" else Color(1, 1, 1, 0.5))
+			_lbl("%s  [%s]%s (pup — grows up tonight)%s" % [g.name, _stat_str(g), _trait_tag(g), mtag], Vector2(40, ry + 6), 13, Color(1, 0.9, 0.6) if mtag != "" else Color(1, 1, 1, 0.5))
 		ry += 36
 
 	# Wall of the dead — anchored to a fixed lower-left spot, independent of roster size.
@@ -178,6 +178,14 @@ func _night_hint(can_raid: bool) -> String:
 func _stat_str(g: Dictionary) -> String:
 	var s: Dictionary = g.get("stats", {})
 	return "H%d S%d B%d" % [int(s.get("health", 1)), int(s.get("sneak", 2)), int(s.get("brawn", 2))]
+
+## A goblin's trait shown as " {Keen}" (or "" if it has none). The raid effect lives
+## in fun_probe; here it's just a badge so you can pick a raider for their perk.
+func _trait_tag(g: Dictionary) -> String:
+	var t := String(g.get("trait", ""))
+	if t != "" and GameState.TRAITS.has(t):
+		return " {%s}" % GameState.TRAITS[t].name
+	return ""
 
 func _lbl(text: String, pos: Vector2, size := 14, col := Color.WHITE) -> Label:
 	var l := Label.new()
