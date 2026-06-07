@@ -1,126 +1,181 @@
 extends Control
-## M2-3 (#8): the Recruitment / Breeding Den — the one hand-built warren room the
-## vertical slice commits to (decision L). Cursor-driven, greybox.
+## M2 Recruitment / Breeding Den — the warren-management day screen.
 ##
-## Each MORNING forces exactly ONE consequential choice (decision I) that changes
-## HOW tonight's raid plays, not just raw power: the player packs ONE kit
-## (lockpicks OR stink bomb) — picking one locks out the other for that raid.
-## The choice is written into GameState.loadout; the raid reads it. The raid can't
-## be launched until the choice is made.
+## #8 gave it the forced morning KIT choice. This slice (the "lives loop", ≈ #9
+## + the food/housing breeding from #12) turns it into the real day phase:
+##  - DIG a mud-hole (shinies) to raise the population cap.
+##  - BREED a pup (food, into a free hole); pups GROW UP over one night.
+##  - pick WHICH adult goes raiding — goblins are lives, and a lost raid is
+##    permadeath (decision N/M/K).
+##  - RAID (risky, for shinies) or FORAGE (safe, for food + time) to spend the night.
 ##
-## Built in code to match the project's style (the raid level is built in code
-## too — the .tscn is a bare root node). Recruitment/breeding proper, the economy,
-## and job assignment arrive in later M2 issues (#9, #12).
+## Built in code (matching the project style) and rebuilt from GameState after
+## every action, so the screen is always a straight read of the data.
 
 signal go_raid
 
-## The kits on offer this morning. Keys MUST match GameState.KIT_* ids; the raid
-## (fun_probe.gd) reads the same ids back to decide how it plays.
+## The kits on offer. Keys MUST match GameState.KIT_* ids; the raid reads them back.
 const KITS := {
 	GameState.KIT_LOCKPICKS: {
 		"label": "Lockpicks",
-		"short": "lockpicks",
-		"blurb": "Pick the barred gate open -> a second, QUIET way out.\nNo need to go Goblin Mode to smash out that side.",
+		"blurb": "Pick the gate open -> a quiet\n2nd way out (no Goblin Mode).",
 	},
 	GameState.KIT_STINK: {
 		"label": "Stink bomb",
-		"short": "stink bomb",
-		"blurb": "One throw (press F in the raid) -> guards rush the pong,\npulling them off a chokepoint so you slip past.",
+		"blurb": "One F-throw lures the guards off\na chokepoint so you slip past.",
 	},
 }
 
-var _hoard: Label
-var _go_btn: Button
-var _choice_hint: Label
-var _kit_btns := {}        # kit id -> Button
-
 func _ready() -> void:
-	GameState.loadout = ""   # a fresh morning: the choice must be made again
+	# A fresh morning: last night's kit + raider pick are spent.
+	GameState.loadout = ""
+	GameState.clear_sent()
+	_build()
+
+# --- Build the whole screen from GameState --------------------------------
+
+func _build() -> void:
+	for c in get_children():
+		c.queue_free()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	var bg := ColorRect.new()
-	bg.color = Color(0.10, 0.12, 0.09)   # mossy day-warren murk
+	bg.color = Color(0.10, 0.12, 0.09)
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bg)
 
-	var title := Label.new()
-	title.text = "THE WARREN — Breeding Den  (morning)"
-	title.position = Vector2(40, 30)
-	title.add_theme_font_size_override("font_size", 26)
-	add_child(title)
+	_lbl("THE WARREN — Night %d" % GameState.night, Vector2(36, 16), 22)
+	_lbl("Food %d    Shinies %d    Holes %d/%d" % [
+		int(GameState.resources.get("food", 0)), int(GameState.resources.get("shinies", 0)),
+		GameState.living().size(), GameState.huts,
+	], Vector2(36, 54), 15, Color(1, 0.9, 0.6))
 
-	# --- Roster + hoard panel (left) ---
-	_label("Yer goblins:", Vector2(40, 86), 16)
-	var y := 112
-	for g in GameState.roster:
-		var nm: String = str(g.get("name", "?"))
-		var alive: bool = bool(g.get("alive", true))
-		var line := _label("  - %s%s" % [nm, "" if alive else "  (dead)"], Vector2(40, y), 14)
-		if not alive:
-			line.modulate = Color(1, 1, 1, 0.4)
-		y += 24
-	_hoard = _label("", Vector2(40, y + 8), 14)
-	_label("Tonight's mark: %s" % str(GameState.chosen_target.get("name", "—")),
-		Vector2(40, y + 32), 14).modulate = Color(1, 0.9, 0.6)
+	_build_roster()
+	_build_actions()
 
-	# --- The forced morning choice (right column, STACKED so nothing overlaps) ---
-	_label("Pack ONE kit for tonight — the other's locked out:", Vector2(360, 84), 16)
-	var ky := 116
+func _build_roster() -> void:
+	_lbl("Send a goblin tonight (click an adult):", Vector2(36, 90), 14)
+	# Adults first (they're the pickable ones), then pups — so a sendable goblin is
+	# always near the top, and the list is capped so it never runs off a big warren.
+	var rows: Array = GameState.adults()
+	rows.append_array(GameState.pups())
+
+	var ry := 114
+	var max_visible := 8
+	for i in range(rows.size()):
+		if i == max_visible - 1 and rows.size() > max_visible:
+			_lbl("...and %d more snoozing in the holes." % (rows.size() - i), Vector2(40, ry + 6), 12, Color(1, 1, 1, 0.5))
+			break
+		var g: Dictionary = rows[i]
+		if g.stage == GameState.STAGE_ADULT:
+			var sent: bool = (g.id == GameState.sent_id)
+			_btn("%s  [adult]%s" % [g.name, "   <- SENT" if sent else ""],
+				Vector2(36, ry), Vector2(290, 30),
+				_on_pick_sent.bind(g.id), false,
+				Color(0.6, 1.0, 0.5) if sent else Color.WHITE)
+		else:
+			_lbl("%s   (pup — grows up tonight)" % g.name, Vector2(40, ry + 6), 13, Color(1, 1, 1, 0.5))
+		ry += 36
+
+	# Wall of the dead — anchored to a fixed lower-left spot, independent of roster size.
+	_lbl("Wall of the dead: %d" % GameState.fallen.size(), Vector2(36, 452), 13, Color(1, 1, 1, 0.45))
+	var shown := 0
+	for i in range(GameState.fallen.size() - 1, -1, -1):
+		if shown >= 3:
+			break
+		var d: Dictionary = GameState.fallen[i]
+		_lbl("  + %s — %s" % [d.name, d.feat], Vector2(36, 472 + shown * 18), 11, Color(1, 0.6, 0.6, 0.7))
+		shown += 1
+
+func _build_actions() -> void:
+	# Build actions (instant, repeatable while affordable).
+	_lbl("Build (anytime):", Vector2(470, 54), 14)
+	_btn("Dig a mud-hole   (%d shinies)" % GameState.DIG_SHINIES, Vector2(470, 80), Vector2(260, 32), _on_dig, not GameState.can_dig())
+	_btn("Breed a pup   (%d food)" % GameState.BREED_FOOD, Vector2(470, 118), Vector2(260, 32), _on_breed, not GameState.can_breed())
+	_lbl(_breed_hint(), Vector2(470, 156), 12, Color(1, 1, 1, 0.55))
+
+	# The forced kit choice (issue #8).
+	_lbl("Tonight — pack a kit:", Vector2(470, 198), 14)
+	var ky := 222
 	for kit_id in KITS:
 		var info: Dictionary = KITS[kit_id]
-		var btn := Button.new()
-		btn.text = info.label
-		btn.position = Vector2(360, ky)
-		btn.size = Vector2(240, 40)
-		btn.pressed.connect(_on_pick.bind(kit_id))
-		add_child(btn)
-		_kit_btns[kit_id] = btn
-		# Blurb under each button, width-constrained + word-wrapped so a long line
-		# can never run into the next column.
-		var blurb := _label(info.blurb, Vector2(360, ky + 44), 12)
-		blurb.size = Vector2(560, 36)
-		blurb.autowrap_mode = TextServer.AUTOWRAP_WORD
-		blurb.modulate = Color(1, 1, 1, 0.7)
-		ky += 100
+		var chosen: bool = (GameState.loadout == kit_id)
+		var locked: bool = (GameState.loadout != "")
+		_btn(info.label + ("  (PACKED)" if chosen else ""), Vector2(470, ky), Vector2(260, 32),
+			_on_pick_kit.bind(kit_id), locked,
+			Color(0.6, 1.0, 0.5) if chosen else (Color(1, 1, 1, 0.4) if locked else Color.WHITE))
+		_lbl(info.blurb, Vector2(470, ky + 36), 11, Color(1, 1, 1, 0.6))
+		ky += 76
 
-	# --- Launch (gated on the choice) ---
-	_go_btn = Button.new()
-	_go_btn.text = "Go raid  >"
-	_go_btn.position = Vector2(360, ky + 16)
-	_go_btn.size = Vector2(240, 52)
-	_go_btn.disabled = true
-	_go_btn.pressed.connect(func() -> void: go_raid.emit())
-	add_child(_go_btn)
+	# Night actions: raid (risky) OR forage (safe). One of them spends the night.
+	var can_raid := (not GameState.sent_goblin().is_empty()) and GameState.loadout != ""
+	_btn("Go raid  >", Vector2(470, ky + 10), Vector2(200, 42), func() -> void: go_raid.emit(), not can_raid)
+	_btn("Forage tonight", Vector2(685, ky + 10), Vector2(180, 42), _on_forage, false, Color(0.7, 0.9, 1.0))
+	_lbl(_night_hint(can_raid), Vector2(470, ky + 60), 12, Color(1, 0.85, 0.55))
 
-	_choice_hint = _label("Choose a kit first.", Vector2(360, ky + 78), 14)
-	_choice_hint.modulate = Color(1, 0.8, 0.5)
+# --- Action handlers (mutate GameState, then rebuild) ---------------------
 
-	_refresh()
+func _on_dig() -> void:
+	GameState.dig_hut()
+	_build.call_deferred()
 
-func _on_pick(kit_id: String) -> void:
-	if GameState.loadout != "":
-		return   # already packed this morning — the choice is locked
-	GameState.loadout = kit_id
-	for id in _kit_btns:
-		var b: Button = _kit_btns[id]
-		b.disabled = true                                # lock out further picks
-		if id == kit_id:
-			b.text = "%s  (PACKED)" % KITS[id].label
-			b.modulate = Color(0.6, 1.0, 0.5)            # chosen — green
-		else:
-			b.modulate = Color(1, 1, 1, 0.35)            # locked out — greyed
-	_go_btn.disabled = false
-	_choice_hint.text = "Packed the %s. Slink out when ready." % KITS[kit_id].short
-	_choice_hint.modulate = Color(0.6, 1.0, 0.5)
+func _on_breed() -> void:
+	GameState.breed_pup()
+	_build.call_deferred()
 
-func _label(text: String, pos: Vector2, size := 14) -> Label:
+func _on_pick_sent(id: int) -> void:
+	GameState.set_sent(id)
+	_build.call_deferred()
+
+func _on_pick_kit(kit_id: String) -> void:
+	if GameState.loadout == "":
+		GameState.loadout = kit_id   # locks the choice for tonight
+	_build.call_deferred()
+
+func _on_forage() -> void:
+	GameState.forage_night()         # +food, ages pups, night advances — no risk
+	GameState.loadout = ""           # a brand new morning
+	GameState.clear_sent()
+	_build.call_deferred()
+
+# --- Hint text ------------------------------------------------------------
+
+func _breed_hint() -> String:
+	if GameState.can_breed():
+		return "Breeds a pup into a free mud-hole. It can raid once it grows up."
+	if GameState.living().size() >= GameState.huts:
+		return "No free mud-holes — dig one first (needs shinies from a raid)."
+	return "Not enough food — forage tonight for more."
+
+func _night_hint(can_raid: bool) -> String:
+	if can_raid:
+		return "Send 'em raiding for shinies (risky — a loss\nis for keeps), or forage for a safe night."
+	var need := PackedStringArray()
+	if GameState.sent_goblin().is_empty():
+		need.append("pick an adult to send")
+	if GameState.loadout == "":
+		need.append("pack a kit")
+	return "To raid: " + " + ".join(need) + ".\nOr just forage tonight."
+
+# --- Tiny builders --------------------------------------------------------
+
+func _lbl(text: String, pos: Vector2, size := 14, col := Color.WHITE) -> Label:
 	var l := Label.new()
 	l.text = text
 	l.position = pos
 	l.add_theme_font_size_override("font_size", size)
+	l.modulate = col
 	add_child(l)
 	return l
 
-func _refresh() -> void:
-	_hoard.text = "Shinies in the hoard: %d" % int(GameState.resources.get("shinies", 0))
+func _btn(text: String, pos: Vector2, size: Vector2, cb: Callable, disabled := false, tint := Color.WHITE) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.position = pos
+	b.size = size
+	b.disabled = disabled
+	b.modulate = tint
+	b.pressed.connect(cb)
+	add_child(b)
+	return b
