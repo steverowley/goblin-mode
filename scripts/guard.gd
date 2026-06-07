@@ -39,6 +39,7 @@ const SCAN_RATE := 1.5           # how fast the gaze sweeps while standing and s
 const STRIKE_R := 30.0           # reach of a guard's telegraphed melee swing
 const WINDUP_TIME := 0.35        # the tell — it rears back this long before the blow lands (dodge it!)
 const STRIKE_CD := 0.4           # minimum gap between swings (aggressive)
+const SWING_HALF := deg_to_rad(55.0)   # half-angle of a guard's wide swing arc (dodge out of it sideways)
 
 const GoblinScript := preload("res://scripts/player.gd")
 
@@ -57,6 +58,9 @@ var downed := false              # stealth-taken-down — inert for the rest of 
 var winding := false             # mid telegraphed wind-up (open brawl)
 var _windup_t := 0.0
 var _strike_cd := 0.0
+var _swing_dir := 0.0            # committed swing direction (angle), locked in at wind-up start
+var _swung_t := 0.0              # brief flash while the swing lands
+var _swung_dir := 0.0
 
 var _wp := 0
 var _player: GoblinScript = null
@@ -134,6 +138,7 @@ func take_hit(dmg: int) -> bool:
 ## BACK (a visible tell) then swings — dodge by getting out of reach before it lands.
 func _attack_step(delta: float) -> void:
 	_strike_cd = maxf(0.0, _strike_cd - delta)
+	_swung_t = maxf(0.0, _swung_t - delta)
 	if state != State.CHASE or _player == null:
 		winding = false
 		return
@@ -142,12 +147,18 @@ func _attack_step(delta: float) -> void:
 		if _windup_t <= 0.0:
 			winding = false
 			_strike_cd = STRIKE_CD
-			if not _caught and global_position.distance_to(_player.global_position) < STRIKE_R:
+			_swung_t = 0.14
+			_swung_dir = _swing_dir
+			# The wide swing connects only if you're still inside its committed arc —
+			# dodge to the SIDE (or back) and it whiffs.
+			var to_p := (_player.global_position - global_position).angle()
+			if not _caught and global_position.distance_to(_player.global_position) < STRIKE_R and absf(angle_difference(_swing_dir, to_p)) < SWING_HALF:
 				_caught = true
 				caught_player.emit()        # the blow connects — the level applies it as a hit + scramble
 	elif global_position.distance_to(_player.global_position) < STRIKE_R and _strike_cd <= 0.0:
 		winding = true
 		_windup_t = WINDUP_TIME
+		_swing_dir = (_player.global_position - global_position).angle()   # commit the swing direction NOW
 
 func _physics_process(delta: float) -> void:
 	if downed:
@@ -362,19 +373,27 @@ func _draw() -> void:
 			cone_col = Color(1, 0.55, 0.1, 0.13)
 		draw_colored_polygon(_cone_pts, cone_col)
 
-	# Telegraphed strike wind-up — a red wedge swelling TOWARD you (the incoming
-	# swing). Dodge out of it before it lands.
-	if winding and _player != null:
+	# Telegraphed wind-up — a red wedge in the COMMITTED swing direction. Dodge out
+	# of the arc (to the side or back) before it lands.
+	if winding:
 		var tp := 1.0 - clampf(_windup_t / WINDUP_TIME, 0.0, 1.0)   # 0..1 as the swing charges
-		var ga := (_player.global_position - global_position).angle()
-		var half := deg_to_rad(42.0)
 		var reach := (STRIKE_R + 6.0) * tp
 		var wpts := PackedVector2Array([Vector2.ZERO])
-		for i in range(11):
-			var ang := ga - half + (2.0 * half) * (float(i) / 10.0)
+		for i in range(13):
+			var ang := _swing_dir - SWING_HALF + (2.0 * SWING_HALF) * (float(i) / 12.0)
 			wpts.append(Vector2(cos(ang), sin(ang)) * reach)
-		draw_colored_polygon(wpts, Color(1.0, 0.2, 0.1, 0.15 + 0.25 * tp))
-		draw_arc(Vector2.ZERO, reach, ga - half, ga + half, 14, Color(1.0, 0.35, 0.1, 0.9), 2.5)
+		draw_colored_polygon(wpts, Color(1.0, 0.2, 0.1, 0.12 + 0.2 * tp))
+		draw_arc(Vector2.ZERO, reach, _swing_dir - SWING_HALF, _swing_dir + SWING_HALF, 16, Color(1.0, 0.35, 0.1, 0.85), 2.0)
+	# The swing landing — a bright red sweep across the committed arc.
+	if _swung_t > 0.0:
+		var sf := clampf(_swung_t / 0.14, 0.0, 1.0)
+		var rr := STRIKE_R + 6.0
+		var spts := PackedVector2Array([Vector2.ZERO])
+		for i in range(13):
+			var ang := _swung_dir - SWING_HALF + (2.0 * SWING_HALF) * (float(i) / 12.0)
+			spts.append(Vector2(cos(ang), sin(ang)) * rr)
+		draw_colored_polygon(spts, Color(1.0, 0.25, 0.1, 0.5 * sf))
+		draw_arc(Vector2.ZERO, rr, _swung_dir - SWING_HALF, _swung_dir + SWING_HALF, 16, Color(1.0, 0.4, 0.15, 0.95 * sf), 3.0)
 	# Big tall-folk body (deliberately larger than the goblin).
 	var bcol: Color = body_color.lerp(Color(1.0, 0.25, 0.1), 0.5) if winding else body_color
 	draw_rect(Rect2(-16, -16, 32, 32), bcol)

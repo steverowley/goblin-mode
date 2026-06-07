@@ -24,8 +24,8 @@ const GRAB_R := 20.0
 const SMASH_R := 36.0
 const MELEE_R := 38.0            # reach of a sword swipe (Bite 2.5)
 const STAB_CD := 0.3             # gap between swipes (quick — guard swings are uninterruptible, so no flinch-lock)
-const SWIPE_HALF := deg_to_rad(55.0)   # half-angle of the frontal swipe cone
-const SWIPE_TIME := 0.18         # how long the swipe arc is drawn
+const SWIPE_HALF := deg_to_rad(20.0)   # half-angle of the goblin's narrow stab
+const SWIPE_TIME := 0.14         # how long the stab thrust is drawn
 const PLAYER_START := Vector2(80, 470)
 const EXIT_POS := Vector2(80, 80)
 const EXIT_R := 34.0
@@ -568,9 +568,9 @@ func _deploy_stink() -> void:
 	_stink_t = STINK_TIME
 	_spawn_text(_stink_pos, "*PHWOAR* stink bomb!", Color(0.6, 1.0, 0.3))
 
-## A sword swipe (LMB): a quick arc in FRONT of the goblin (where you're aiming).
-## EVERYTHING in the cone is hit — an UNAWARE guard is a silent takedown, an
-## ALERTED one takes a chip of HP (it swings back). Multi-target.
+## A quick STAB (LMB): a narrow thrust where you're aiming. An UNAWARE guard is a
+## silent takedown; an ALERTED one takes a chip of HP (it swings back). Precise —
+## aim it at the guard.
 func _try_takedown() -> void:
 	if _stab_cd > 0.0:
 		return
@@ -754,16 +754,14 @@ class _OverlayDraw extends Node2D:
 			probe._draw_overlay(self)
 
 func _draw_overlay(cv: CanvasItem) -> void:
-	# Sword swipe (Bite 2.5) — a bright filled slash arc in front of the goblin.
+	# Goblin STAB (Bite 2.5) — a quick pointed thrust where you're aiming.
 	if _swipe_t > 0.0 and _player != null:
-		var sa := _swipe_dir.angle()
+		var sd: Vector2 = _swipe_dir
 		var salpha := clampf(_swipe_t / SWIPE_TIME, 0.0, 1.0)
-		var pts := PackedVector2Array([_player.global_position])
-		for i in range(13):
-			var ang := sa - SWIPE_HALF + (2.0 * SWIPE_HALF) * (float(i) / 12.0)
-			pts.append(_player.global_position + Vector2(cos(ang), sin(ang)) * MELEE_R)
-		cv.draw_colored_polygon(pts, Color(0.95, 0.97, 1.0, 0.45 * salpha))
-		cv.draw_arc(_player.global_position, MELEE_R, sa - SWIPE_HALF, sa + SWIPE_HALF, 20, Color(1, 1, 1, 0.95 * salpha), 2.5)
+		var tip := _player.global_position + sd * MELEE_R
+		var base := _player.global_position + sd * 6.0
+		var perp := Vector2(-sd.y, sd.x) * 5.0
+		cv.draw_colored_polygon(PackedVector2Array([base - perp, base + perp, tip]), Color(0.95, 0.98, 1.0, 0.95 * salpha))
 	# Stink cloud (issue #8) — a green pall, kept bright above the fog, that lures guards in.
 	if _stink_t > 0.0:
 		var sa: float = clampf(_stink_t / STINK_TIME, 0.0, 1.0)
